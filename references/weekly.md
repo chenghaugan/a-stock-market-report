@@ -201,6 +201,62 @@
 
 ---
 
+## Tavily 研究策略
+
+### 搜索原则
+
+1. **搜索次数**：至少 **5-7 次** Tavily 搜索（周报需要更全面）
+2. **搜索深度**：`search_depth=advanced`（周报需要深度分析）
+3. **时间范围**：`time_range=week`
+4. **主题**：`topic=finance`
+
+### 数据采集失败兜底逻辑（重要）
+
+**⚠️ 当 JSON 数据中 `quality_report.passed=false` 或 `quality_score < 0.5` 时，必须执行 Tavily 兜底搜索**
+
+```
+# 检查 JSON 中的 quality_report 字段
+quality_report.passed == false  → 数据质量不通过，必须补充搜索
+quality_report.quality_score < 0.5 → 触发兜底机制
+
+# 兜底搜索 Query（从 tavily_supplement.queries 提取）
+{
+  "tavily_supplement": {
+    "needed": true,
+    "queries": ["A股行业板块涨幅排名 本周", "本周涨停板 热门个股"],
+    "fields": ["sectors", "zt_pool"]
+  }
+}
+
+# 执行流程：
+1. 读取 JSON → 检查 quality_report.tavily_supplement.needed
+2. 如果 needed=true → 执行 tavily_supplement.queries 中的每个搜索
+3. 搜索结果用于补充缺失章节（按 tavily_supplement.fields 对应）
+```
+
+**字段-章节映射**：
+| tavily_supplement.fields | 对应章节 |
+|--------------------------|----------|
+| `indices` | 一、周度市场全景 |
+| `sectors` | 三、周度热门板块轮动分析 |
+| `zt_pool` | 四、周度核心个股追踪 |
+| `watchlist_a/watchlist_hk` | 五、自选股周度跟踪 |
+
+### 周报必搜 Query
+
+```
+Query 1: "A股 本周行情 总结 大盘走势"
+Query 2: "A股 本周热点板块 资金流向"
+Query 3: "A股 本周重要财经新闻 政策"
+Query 4: "本周涨停股 热门个股 原因分析"
+Query 5（可选）: "{具体热门板块} 本周行情 催化剂"
+Query 6（可选）: "美股 港股 本周行情 外盘影响"
+```
+
+**⚠️ 如果 quality_report.tavily_supplement.queries 存在，优先执行这些兜底 Query，再执行常规必搜 Query**
+
+---
+
 ## 六、下周策略与展望
 
 ### 本周市场总结

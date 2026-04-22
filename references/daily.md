@@ -168,6 +168,38 @@ Obsidian推送目标：
 3. **时间范围**：`time_range=day`
 4. **主题**：`topic=finance`
 
+### 数据采集失败兜底逻辑（重要）
+
+**⚠️ 当 JSON 数据中 `quality_report.passed=false` 或 `quality_score < 0.5` 时，必须执行 Tavily 兜底搜索**
+
+```
+# 检查 JSON 中的 quality_report 字段
+quality_report.passed == false  → 数据质量不通过，必须补充搜索
+quality_report.quality_score < 0.5 → 触发兜底机制
+
+# 兜底搜索 Query（从 tavily_supplement.queries 提取）
+{
+  "tavily_supplement": {
+    "needed": true,
+    "queries": ["A股行业板块涨幅排名 今日", "今日涨停板 涨停原因"],
+    "fields": ["sectors", "zt_pool"]
+  }
+}
+
+# 执行流程：
+1. 读取 JSON → 检查 quality_report.tavily_supplement.needed
+2. 如果 needed=true → 执行 tavily_supplement.quies 中的每个搜索
+3. 搜索结果用于补充缺失章节（按 tavily_supplement.fields 对应）
+```
+
+**字段-章节映射**：
+| tavily_supplement.fields | 对应章节 |
+|--------------------------|----------|
+| `indices` | 一、市场全景概览 |
+| `sectors` | 三、五大热门板块深度解析 |
+| `zt_pool` | 四、五大核心个股追踪 |
+| `watchlist_a/watchlist_hk` | 五、自选股跟踪 |
+
 ### 日报必搜 Query
 
 ```
@@ -177,6 +209,8 @@ Query 3: "A股 政策面 利好利空 {date}"
 Query 4（可选）: "美股 港股 外盘行情 {date}"
 Query 5（可选）: "{具体热门板块} 今日行情 原因"
 ```
+
+**⚠️ 如果 quality_report.tavily_supplement.queries 存在，优先执行这些兜底 Query，再执行常规必搜 Query**
 
 ---
 

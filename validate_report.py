@@ -44,6 +44,42 @@ def detect_report_type(report_content: str) -> str:
     return 'daily'
 
 
+def get_unified_meta_path() -> str:
+    """获取统一验证元数据文件路径"""
+    script_dir = Path(__file__).parent
+    return str(script_dir / 'references' / 'validation_meta.md')
+
+
+def parse_unified_meta() -> dict:
+    """从统一元数据文件解析通用规则"""
+    unified_path = get_unified_meta_path()
+    if not Path(unified_path).exists():
+        return {'forbidden': [], 'report_type_rules': {}}
+
+    with open(unified_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    meta = {'forbidden': [], 'report_type_rules': {}}
+
+    # 解析禁止模式
+    forbidden_match = re.search(r'FORBIDDEN:\n(.*?)FORBIDDEN:END', content, re.DOTALL)
+    if forbidden_match:
+        for line in forbidden_match.group(1).strip().split('\n'):
+            line = line.strip()
+            if line:
+                meta['forbidden'].append(line)
+
+    # 解析报告类型检测规则（可选）
+    rules_match = re.search(r'REPORT_TYPE_RULES:\n(.*?)REPORT_TYPE_RULES:END', content, re.DOTALL)
+    if rules_match:
+        for line in rules_match.group(1).strip().split('\n'):
+            if ':' in line:
+                key, pattern = line.split(':', 1)
+                meta['report_type_rules'][key.strip()] = pattern.strip()
+
+    return meta
+
+
 def parse_template_meta(template_path: str, report_type: str = None) -> dict:
     """从模板文件解析元数据"""
     with open(template_path, 'r', encoding='utf-8') as f:
@@ -93,7 +129,13 @@ def parse_template_meta(template_path: str, report_type: str = None) -> dict:
             if '→' in line:
                 data_key, section = line.split('→')
                 meta['data_deps'][data_key.strip()] = section.strip()
-    
+
+    # 合并统一元数据中的禁止模式
+    unified_meta = parse_unified_meta()
+    if unified_meta['forbidden']:
+        # 统一禁止模式优先，后接模板特定禁止模式
+        meta['forbidden'] = unified_meta['forbidden'] + meta['forbidden']
+
     return meta
 
 

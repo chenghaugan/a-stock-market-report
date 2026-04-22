@@ -180,11 +180,13 @@ def get_from_obsidian(
     
     try:
         response = requests.get(url, headers=headers, timeout=30, verify=False)
-        
+
         if response.status_code == 200:
+            # 强制使用UTF-8解码，避免自动检测编码错误
+            content = response.content.decode('utf-8', errors='replace')
             return {
                 "success": True,
-                "content": response.text,
+                "content": content,
                 "url": url
             }
         else:

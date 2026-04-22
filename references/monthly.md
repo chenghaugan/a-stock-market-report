@@ -213,6 +213,64 @@
 
 ---
 
+## Tavily 研究策略
+
+### 搜索原则
+
+1. **搜索次数**：至少 **7-10 次** Tavily 搜索（月报需要最全面分析）
+2. **搜索深度**：`search_depth=advanced`（月报需要深度研究）
+3. **时间范围**：`time_range=month`
+4. **主题**：`topic=finance`
+
+### 数据采集失败兜底逻辑（重要）
+
+**⚠️ 当 JSON 数据中 `quality_report.passed=false` 或 `quality_score < 0.5` 时，必须执行 Tavily 兜底搜索**
+
+```
+# 检查 JSON 中的 quality_report 字段
+quality_report.passed == false  → 数据质量不通过，必须补充搜索
+quality_report.quality_score < 0.5 → 触发兜底机制
+
+# 兜底搜索 Query（从 tavily_supplement.queries 提取）
+{
+  "tavily_supplement": {
+    "needed": true,
+    "queries": ["A股行业板块涨幅排名 本月", "本月涨停板 热门个股"],
+    "fields": ["sectors", "zt_pool"]
+  }
+}
+
+# 执行流程：
+1. 读取 JSON → 检查 quality_report.tavily_supplement.needed
+2. 如果 needed=true → 执行 tavily_supplement.queries 中的每个搜索
+3. 搜索结果用于补充缺失章节（按 tavily_supplement.fields 对应）
+```
+
+**字段-章节映射**：
+| tavily_supplement.fields | 对应章节 |
+|--------------------------|----------|
+| `indices` | 一、月度市场全景 |
+| `sectors` | 三、月度主线板块深度解析 |
+| `zt_pool` | 四、月度核心个股追踪 |
+| `watchlist_a/watchlist_hk` | 五、自选股月度跟踪 |
+
+### 月报必搜 Query
+
+```
+Query 1: "A股 本月行情 总结 大盘走势"
+Query 2: "A股 本月主线板块 资金动向"
+Query 3: "A股 本月重要财经事件 政策回顾"
+Query 4: "本月涨停股 热门个股 主线龙头"
+Query 5: "本月市场风格 资金偏好 机构动向"
+Query 6（可选）: "{具体主线板块} 本月行情 驱动因素"
+Query 7（可选）: "美股 港股 本月行情 全球市场"
+Query 8（可选）: "下月市场展望 政策预期 经济数据"
+```
+
+**⚠️ 如果 quality_report.tavily_supplement.queries 存在，优先执行这些兜底 Query，再执行常规必搜 Query**
+
+---
+
 ## 六、下月策略与展望
 
 ### 本月市场总结
