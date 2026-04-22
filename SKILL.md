@@ -32,7 +32,8 @@ a-stock-market-report/
 └── references/
     ├── daily.md          # 日报模板（AI Agent生成报告的指导模板）
     ├── weekly.md         # 周报模板
-    └── monthly.md        # 月报模板
+    ├── monthly.md        # 月报模板
+    └── validation_meta.md # 统一验证元数据（禁止模式、类型检测规则）
 ```
 
 ## 执行流程
@@ -145,3 +146,17 @@ FORBIDDEN:END
 ---
 
 **关键**：模板文件（references/*.md）是AI Agent生成报告的指导模板，包含完整结构要求和元数据。Agent读取模板后自动生成报告，**非手动撰写**。
+
+## 依赖说明
+
+**Python 版本**：3.8+
+
+**标准库依赖**：
+- `requests`：HTTP 请求（数据采集）
+- `json`：数据解析
+- `re`：正则表达式（验证脚本）
+
+**可选依赖**：
+- 无第三方依赖，全部使用 Python 标准库
+
+---

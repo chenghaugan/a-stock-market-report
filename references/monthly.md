@@ -259,17 +259,7 @@ SECTIONS_MONTHLY:
 SECTIONS_MONTHLY:END
 -->
 
-### 禁止模式
-<!--
-FORBIDDEN:
-由AI深度分析后补充
-待补充
-暂无数据
-[待填充]
-...补充
-[待更新]
-FORBIDDEN:END
--->
+<!-- 统一禁止模式已迁移至 references/validation_meta.md -->
 
 ### 数据依赖
 <!--
@@ -291,12 +281,7 @@ REQUIREMENTS:
 REQUIREMENTS:END
 -->
 
-### 报告类型检测规则
-<!--
-REPORT_TYPE_RULES:
-月报标题模式: # YYYYMMDD 月度复盘报告 或 # 月度复盘报告
-REPORT_TYPE_RULES:END
--->
+<!-- 统一报告类型检测规则已迁移至 references/validation_meta.md -->
 
 <!--
 META:END
