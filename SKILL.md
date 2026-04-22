@@ -1,7 +1,7 @@
 ---
 name: a-stock-market-report
-description: A股市场数据采集与复盘报告生成。腾讯/新浪/东财API多源采集，AI Agent基于模板生成报告，推送Obsidian并校验。
-version: 10.0.0
+description: A股市场数据采集与复盘报告生成。腾讯/新浪/东财API多源采集，AI Agent基于模板生成报告，新闻数据持久化存储，推送Obsidian并校验。
+version: 11.0.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, windows]
@@ -14,7 +14,7 @@ platforms: [linux, windows]
 **三层工作流**：
 
 ```
-数据采集(run_report.py) → 报告生成(AI Agent + 模板) → 推送验证(push_to_obsidian.py)
+数据采集(run_report.py) → 新闻存储(news_storage.py) → 报告生成(AI Agent + 模板) → 推送验证(push_to_obsidian.py)
 ```
 
 **文件结构**：
@@ -26,9 +26,34 @@ a-stock-market-report/
 ├── run_report.py         # 数据采集脚本
 ├── push_to_obsidian.py   # Obsidian 推送脚本
 ├── validate_report.py    # 报告校验脚本
+├── output/               # 统一输出目录（新增）
+│   ├── data/             # 市场数据 JSON
+│   │   ├── data_20260422.json
+│   │   └── ...
+│   ├── news/             # 新闻数据（新增）
+│   │   ├── daily/        # 日报新闻
+│   │   │   ├── news_20260422.json
+│   │   │   └── ...
+│   │   ├── weekly/       # 周报新闻聚合
+│   │   │   ├── news_2026-W17.json
+│   │   │   └── ...
+│   │   └── monthly/      # 月报新闻聚合
+│   │   │   ├── news_2026-04.json
+│   │   │   └── ...
+│   └── reports/          # 报告文件
+│       ├── daily/
+│       │   ├── report_2026-04-22.md
+│       │   └── ...
+│       ├── weekly/
+│       │   ├── report_2026-W17.md
+│       │   └── ...
+│       └── monthly/
+│           ├── report_2026-04.md
+│           └── ...
 ├── scripts/
 │   ├── fetchlayer.py     # 多源数据获取层
-│   └── datafoundation.py # 基础设施层（curl封装）
+│   ├── datafoundation.py # 基础设施层（curl封装）
+│   └── news_storage.py   # 新闻存储与聚合（新增）
 └── references/
     ├── daily.md          # 日报模板（AI Agent生成报告的指导模板）
     ├── weekly.md         # 周报模板
@@ -53,18 +78,59 @@ python run_report.py <日期> --mode daily
 - 涨停池：东财主源
 - 自选股：腾讯/新浪/东财三源
 
-### Step 2: 报告生成
+### Step 2: 新闻数据存储（新增）
+
+日报生成时，Tavily 搜索结果自动保存到 `output/news/daily/` 目录：
+
+```
+output/news/daily/news_YYYYMMDD.json
+```
+
+新闻数据格式：
+```json
+{
+  "date": "2026-04-22",
+  "search_queries": ["A股 今日行情...", ...],
+  "results": [{"query": "...", "items": [...]}],
+  "meta": {"total_items": 15, "credit_used": 3}
+}
+```
+
+**好处**：
+- 周报/月报复用日报新闻，节省 Tavily credits
+- 数据可追溯，便于回溯分析
+
+### Step 3: 报告生成
 
 AI Agent 基于 `references/daily.md` 模板生成报告：
 
 1. 读取 `references/daily.md` 获取模板结构和要求
 2. 解析模板中的元数据区块（SECTIONS、FORBIDDEN等）
-3. 结合JSON数据 + Tavily搜索补充（3-5次搜索，直到搜集足够信息）
-4. 按模板结构逐章节生成完整Markdown报告
+3. 结合JSON数据 + Tavily搜索补充（日报：3-5次搜索）
+4. **新闻数据自动保存到 output/news/daily/ 目录**
+5. 按模板结构逐章节生成完整Markdown报告
 
 **模板的作用**：指导AI Agent生成报告的格式、章节结构、字数要求，**不是手动撰写**。
 
-### Step 3: 校验
+### Step 4: 周报/月报新闻复用（新增）
+
+周报/月报生成时优先复用已存储的新闻数据：
+
+| 报告类型 | 新闻来源 | 补充搜索次数 |
+|---------|---------|------------|
+| 周报 | 本周日报聚合 | 2-3次（仅补充遗漏） |
+| 月报 | 本月日报+周报聚合 | 3-5次（仅补充遗漏） |
+
+复用流程：
+```
+1. 读取 output/news/daily/ 中本周/本月的新闻文件
+2. 聚合所有新闻，去重（基于 URL）
+3. 检查覆盖率（是否有重大事件遗漏）
+4. 如有遗漏，补充搜索
+5. 保存聚合结果到 output/news/weekly/ 或 output/news/monthly/
+```
+
+### Step 5: 校验
 
 ```bash
 python validate_report.py <report.md> --type daily
@@ -76,7 +142,7 @@ python validate_report.py <report.md> --type daily
 - 字数达标
 - 无禁止占位符
 
-### Step 4: 推送
+### Step 6: 推送
 
 ```bash
 python push_to_obsidian.py push --file "2026-04-22_日报.md" --content-file report.md
@@ -113,8 +179,10 @@ FORBIDDEN:END
 ```json
 {
   "paths": {
-    "data_dir": "/opt/data/market-reports/data",
-    "reports_dir": "/opt/data/market-reports/reports"
+    "output_dir": "output",
+    "data_dir": "output/data",
+    "news_dir": "output/news",
+    "reports_dir": "output/reports"
   },
   "obsidian": {
     "api_url": "https://obsidian-api.xxx:5000",
@@ -138,6 +206,66 @@ FORBIDDEN:END
 2. **Windows终端GBK**：输出emoji会报错，已替换为ASCII
 3. **push_to_obsidian.py编码**：读取文件需指定UTF-8
 4. **板块涨跌幅格式**：已统一为百分比，无需再×100
+
+## 新闻数据存储与复用
+
+### 目录结构
+
+```
+output/news/
+├── daily/     # 日报新闻（每日 Tavily 搜索结果）
+├── weekly/    # 周报新闻聚合（复用日报 + 补充）
+└── monthly/   # 月报新闻聚合（复用日报+周报 + 补充）
+```
+
+### 存储时机
+
+- **日报生成时自动存储**：Tavily 搜索结果保存到 `output/news/daily/news_YYYYMMDD.json`
+- **周报生成时聚合**：读取本周日报，聚合保存到 `output/news/weekly/news_YYYY-WXX.json`
+- **月报生成时聚合**：读取本月日报+周报，聚合保存到 `output/news/monthly/news_YYYY-MM.json`
+
+### 复用策略
+
+| 报告类型 | 复用来源 | 补充搜索 |
+|---------|---------|---------|
+| 周报 | 本周日报（周一至周五） | 2-3次（仅遗漏事件） |
+| 月报 | 本月日报 + 本月周报 | 3-5次（仅遗漏事件） |
+
+### 新闻数据格式
+
+```json
+{
+  "date": "2026-04-22",
+  "generated_at": "2026-04-22 16:15:00",
+  "search_queries": ["A股 今日行情...", ...],
+  "results": [
+    {
+      "query": "...",
+      "items": [{"title": "...", "url": "...", "content": "..."}]
+    }
+  ],
+  "meta": {"total_items": 15, "credit_used": 3}
+}
+```
+
+### 使用脚本
+
+```python
+# scripts/news_storage.py
+from news_storage import save_daily_news, load_daily_news
+from news_storage import aggregate_weekly_news, aggregate_monthly_news
+
+# 日报：保存新闻
+save_daily_news("2026-04-22", search_queries, results)
+
+# 周报：聚合新闻（自动复用日报）
+weekly_news = aggregate_weekly_news("2026-04-22")
+
+# 月报：聚合新闻（自动复用日报+周报）
+monthly_news = aggregate_monthly_news("2026-04")
+```
+
+---
 
 ## 数据质量评分
 

@@ -833,28 +833,37 @@ def fetch_multi_zt_pool() -> Tuple[List[Dict], List[SourceQuality]]:
 # =============================================================================
 
 def parse_tencent_a(content: str) -> List[Dict]:
-    """解析腾讯 qt.gtimg.cn A股响应"""
+    """
+    解析腾讯 web.sqt.gtimg.cn A股响应
+    字段索引（~分隔）：
+    [1] 股票名称, [2] 代码, [3] 当前价, [4] 昨收价
+    [31] 涨跌点, [32] 涨跌幅%, [33] 最高价, [34] 最低价
+    """
     results = []
     for line in content.strip().split("\n"):
         if not line.strip() or '"' not in line or '~' not in line:
             continue
         parts = line.split("~")
-        if len(parts) < 11:
+        if len(parts) < 35:
             continue
         name  = parts[1]
         code  = parts[2]
         price = safe_float(parts[3])
         prev  = safe_float(parts[4])
-        pct   = (price - prev) / prev * 100 if prev else 0
+        # 直接使用腾讯 API 的涨跌幅字段 [32]
+        pct   = safe_float(parts[32]) if len(parts) > 32 else (price - prev) / prev * 100 if prev else 0
+        # 统一代码格式：去掉前缀（sh/sz），保留纯6位代码
+        pure_code = code.replace("sh", "").replace("sz", "").replace("bj", "")
         results.append({
-            "code":   code,
+            "code":   pure_code,
             "name":   name,
             "price":  price,
             "prev":   round(prev, 2),
             "pct":    round(pct, 2),
-            "volume": parts[6],
+            "volume": parts[6] if len(parts) > 6 else "",
             "amount": parts[37] if len(parts) > 37 else "",
             "sector": "",
+            "_source": "腾讯",
         })
     return results
 
@@ -1006,24 +1015,30 @@ def fetch_multi_watchlist_a(codes: List[str]) -> Tuple[List[Dict], List[SourceQu
             sq.issues.append(f"解析失败: {e}")
             sq.score = 0.1
 
-    # 按 code 合并多源
+    # 按 code 合并多源（统一使用纯6位代码格式）
     all_codes = set()
     for items in parsed_by_source.values():
         for item in items:
-            all_codes.add(item["code"])
+            # 统一代码格式：去掉前缀，保留纯代码
+            pure_code = item["code"].replace("sh", "").replace("sz", "").replace("bj", "")
+            item["code"] = pure_code  # 修正回纯代码格式
+            all_codes.add(pure_code)
 
     final = []
     for code in all_codes:
         price_by_src = {}
         pct_by_src = {}
         best_item = None
+        sources_found = []
 
         for src, items in parsed_by_source.items():
             for item in items:
                 if item["code"] == code:
                     price_by_src[src] = item["price"]
                     pct_by_src[src] = item["pct"]
-                    if best_item is None:
+                    sources_found.append(src)
+                    # 优先选择腾讯数据（涨跌幅准确）
+                    if best_item is None or src == "腾讯A":
                         best_item = item.copy()
                     break
 
@@ -1047,6 +1062,7 @@ def fetch_multi_watchlist_a(codes: List[str]) -> Tuple[List[Dict], List[SourceQu
             best_item["_price_diff_pct"] = round(price_diff_pct, 3)
             best_item["_quality_score"] = score
             best_item["_quality_issues"] = issues
+            best_item["_sources"] = sources_found
             final.append(best_item)
 
     return final, raw_results

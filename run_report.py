@@ -43,6 +43,7 @@ except ImportError as e:
 
 # ========== 配置 ==========
 CONFIG_PATH = Path(__file__).parent / "config.json"
+SKILL_ROOT = Path(__file__).parent  # skill根目录
 
 def load_config():
     """加载配置文件，自动检测编码（UTF-8优先，GBK兜底）"""
@@ -53,9 +54,32 @@ def load_config():
         with open(CONFIG_PATH, 'r', encoding='gbk') as f:
             return json.load(f)
 
+def resolve_path(path_str: str, base_dir: Path = SKILL_ROOT) -> Path:
+    """
+    解析路径，支持相对路径和绝对路径
+
+    Args:
+        path_str: 配置中的路径字符串
+        base_dir: 相对路径的基准目录（默认为skill根目录）
+
+    Returns:
+        解析后的绝对路径
+    """
+    if not path_str:
+        return base_dir
+
+    path = Path(path_str)
+    if path.is_absolute():
+        return path
+    else:
+        return base_dir / path_str
+
 _config = load_config()
-DATA_DIR = Path(_config.get("paths", {}).get("data_dir", "/opt/data/market-reports/data"))
-SKILL_DIR = Path(_config.get("paths", {}).get("skill_dir", Path(__file__).parent))
+OUTPUT_DIR = resolve_path(_config.get("paths", {}).get("output_dir", "output"))
+DATA_DIR = resolve_path(_config.get("paths", {}).get("data_dir", "output/data"))
+NEWS_DIR = resolve_path(_config.get("paths", {}).get("news_dir", "output/news"))
+REPORTS_DIR = resolve_path(_config.get("paths", {}).get("reports_dir", "output/reports"))
+SKILL_DIR = resolve_path(_config.get("paths", {}).get("skill_dir", ""), SKILL_ROOT)
 
 # ========== 交易日历工具 ==========
 AKSHARE_READY = False
@@ -288,14 +312,18 @@ def main():
     return 0
 
 
-def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool, 
+def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
                      config: Dict) -> Dict:
     """日报模式：使用多源交叉验证获取数据"""
-    
+
     if not FETCHLAYER_READY:
         print("❌ fetchlayer 未就绪，无法采集数据", file=sys.stderr)
         return {"error": "fetchlayer_not_ready", "date": date_str}
-    
+
+    # 确保目录存在
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (REPORTS_DIR / "daily").mkdir(parents=True, exist_ok=True)
+
     output_path = DATA_DIR / f"data_{target_date.replace('-', '')}.json"
     
     print("\n正在多源采集数据...", file=sys.stderr)
@@ -335,17 +363,32 @@ def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
     hot_sectors = analyze_hot_sectors(sectors)
     hot_stocks = analyze_hot_stocks(zt_pool)
     
-    # === 自选股分段 ===
-    a_gainers = sorted([s for s in a_stocks if (s.get('pct') or 0) >= 3],
+    # === 自选股分段（修正统计逻辑）===
+    # 涨幅>3% 为显著上涨，跌幅>3% 为显著下跌
+    # 上涨：pct > 0，下跌：pct < 0，平盘：pct == 0 或接近0
+    a_gainers = sorted([s for s in a_stocks if (s.get('pct') or 0) > 0],
                        key=lambda x: x.get('pct', 0), reverse=True)
-    a_losers = sorted([s for s in a_stocks if (s.get('pct') or 0) <= -3],
+    a_losers = sorted([s for s in a_stocks if (s.get('pct') or 0) < 0],
                       key=lambda x: x.get('pct', 0))
-    
-    hk_gainers = sorted([s for s in hk_stocks if (s.get('pct') or 0) >= 3],
+    a_flat = [s for s in a_stocks if abs(s.get('pct', 0)) < 0.01]
+
+    # 涨幅超3%的个股（异动统计）
+    a_gainers_3pct = sorted([s for s in a_stocks if (s.get('pct') or 0) >= 3],
+                            key=lambda x: x.get('pct', 0), reverse=True)
+    a_losers_3pct = sorted([s for s in a_stocks if (s.get('pct') or 0) <= -3],
+                           key=lambda x: x.get('pct', 0))
+
+    hk_gainers = sorted([s for s in hk_stocks if (s.get('pct') or 0) > 0],
                         key=lambda x: x.get('pct', 0), reverse=True)
-    hk_losers = sorted([s for s in hk_stocks if (s.get('pct') or 0) <= -3],
+    hk_losers = sorted([s for s in hk_stocks if (s.get('pct') or 0) < 0],
                        key=lambda x: x.get('pct', 0))
-    
+    hk_flat = [s for s in hk_stocks if abs(s.get('pct', 0)) < 0.01]
+
+    hk_gainers_3pct = sorted([s for s in hk_stocks if (s.get('pct') or 0) >= 3],
+                            key=lambda x: x.get('pct', 0), reverse=True)
+    hk_losers_3pct = sorted([s for s in hk_stocks if (s.get('pct') or 0) <= -3],
+                           key=lambda x: x.get('pct', 0))
+
     # === 构建输出 ===
     output = {
         "date": date_str,
@@ -362,13 +405,31 @@ def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
         "hot_stocks": hot_stocks,
         "watchlist_a": {
             "all": a_stocks,
+            "count": len(a_stocks),
             "gainers": a_gainers,
+            "gainers_count": len(a_gainers),
             "losers": a_losers,
+            "losers_count": len(a_losers),
+            "flat": a_flat,
+            "flat_count": len(a_flat),
+            "gainers_3pct": a_gainers_3pct,
+            "losers_3pct": a_losers_3pct,
+            "top_gainer": a_gainers[0] if a_gainers else None,
+            "top_loser": a_losers[0] if a_losers else None,
         },
         "watchlist_hk": {
             "all": hk_stocks,
+            "count": len(hk_stocks),
             "gainers": hk_gainers,
+            "gainers_count": len(hk_gainers),
             "losers": hk_losers,
+            "losers_count": len(hk_losers),
+            "flat": hk_flat,
+            "flat_count": len(hk_flat),
+            "gainers_3pct": hk_gainers_3pct,
+            "losers_3pct": hk_losers_3pct,
+            "top_gainer": hk_gainers[0] if hk_gainers else None,
+            "top_loser": hk_losers[0] if hk_losers else None,
         },
         "data_source_status": {
             "indices": "ok" if indices else "failed",
@@ -390,6 +451,10 @@ def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
 
 def fetch_weekly_data(date_str: str, target_date: str, config: Dict) -> Dict:
     """周报模式：使用多源数据"""
+    # 确保目录存在
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (REPORTS_DIR / "weekly").mkdir(parents=True, exist_ok=True)
+
     output_path = DATA_DIR / f"weekly_{target_date.replace('-', '')}.json"
     
     if output_path.exists():
@@ -438,6 +503,10 @@ def fetch_weekly_data(date_str: str, target_date: str, config: Dict) -> Dict:
 
 def fetch_monthly_data(date_str: str, target_date: str, config: Dict) -> Dict:
     """月报模式：使用多源数据"""
+    # 确保目录存在
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (REPORTS_DIR / "monthly").mkdir(parents=True, exist_ok=True)
+
     output_path = DATA_DIR / f"monthly_{target_date.replace('-', '')}.json"
     
     if output_path.exists():

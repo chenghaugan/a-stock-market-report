@@ -86,9 +86,9 @@ quality_score: {quality_score}
 ## 三、月度主线板块深度解析
 
 **板块筛选逻辑**：从投资经理视角综合考量，非单纯按涨跌幅排序。权重分配：
-- 板块热度（30%）：市场讨论度、新闻曝光度、社交媒体热度
-- 资金关注度（25%）：板块资金净流入、成交量放大程度
-- 涨跌幅（25%）：月累计涨幅绝对值
+- 板块热度（20%）：市场讨论度、新闻曝光度、社交媒体热度
+- 资金关注度（20%）：板块资金净流入、成交量放大程度
+- 涨跌幅（40%）：月累计涨幅绝对值
 - 持续性（20%）：连续上涨天数、月内趋势强度、是否形成主线
 
 | 排名 | 板块名称 | 月累计涨幅 | 代表个股 | 板块逻辑 |
@@ -225,14 +225,66 @@ quality_score: {quality_score}
 
 ---
 
+## 新闻数据复用（新增）
+
+**⚠️ 重要：月报生成时优先复用日报/周报新闻数据，仅补充未覆盖内容**
+
+### 复用机制
+
+```
+1. 读取本月所有 daily news 文件（output/news/daily/news_YYYYMMDD.json）
+2. 读取本月所有 weekly news 文件（output/news/weekly/news_YYYY-WXX.json）
+3. 聚合所有新闻，按日期排序，去重（基于 URL）
+4. 检查覆盖率：是否有重大宏观事件遗漏
+5. 如有遗漏，补充 3-5 次 Tavily 搜索（仅搜索未覆盖的内容）
+6. 保存聚合后的新闻到 output/news/monthly/news_YYYY-MM.json
+```
+
+### 复用优先级
+
+| 来源 | 优先级 | 说明 |
+|-----|-------|------|
+| daily news（本月） | 最高 | 直接复用，节省 credits |
+| weekly news（本月） | 高 | 复用周度聚合结果 |
+| 补充搜索 | 中等 | 仅覆盖遗漏的重大宏观事件 |
+| 完全重新搜索 | 最低 | 仅在无 daily/weekly news 时使用 |
+
+### 补充搜索触发条件
+
+当以下情况发生时，执行补充搜索：
+- 本月某些日期没有 daily news 文件（非交易日）
+- 覆盖检查发现重大宏观事件未覆盖（如政策发布、重要会议、经济数据）
+- 用户明确要求补充特定主题的新闻
+
+### 命令示例
+
+```python
+# 使用 scripts/news_storage.py
+from news_storage import aggregate_monthly_news, save_monthly_news
+
+# 1. 聚合月度新闻（自动复用 daily/weekly news）
+monthly_news = aggregate_monthly_news("2026-04")
+
+# 2. 如需补充搜索（未覆盖的重大宏观事件）
+supplement = tavily_search("本月重大经济数据发布 2026-04")
+monthly_news = aggregate_monthly_news("2026-04", supplement)
+
+# 3. 保存聚合后的新闻
+save_monthly_news(monthly_news)
+```
+
+---
+
 ## Tavily 研究策略
 
 ### 搜索原则
 
-1. **搜索次数**：至少 **7-10 次** Tavily 搜索（月报需要最全面分析）
-2. **搜索深度**：`search_depth=advanced`（月报需要深度研究）
+1. **搜索次数**：优先复用日报/周报新闻（节省 credits），补充搜索 **3-5 次** 即可
+2. **搜索深度**：`search_depth=advanced`（补充搜索需要深度研究）
 3. **时间范围**：`time_range=month`
 4. **主题**：`topic=finance`
+
+**⚠️ 注意**：月报不再需要 7-10 次完全搜索，改为复用日报/周报 + 补充搜索
 
 ### 数据采集失败兜底逻辑（重要）
 
