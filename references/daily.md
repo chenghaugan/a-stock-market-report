@@ -53,7 +53,19 @@ Obsidian推送目标：
 ## 报告模板结构（必须严格遵循）
 
 ```markdown
-# {YYYYMMDD} 每日复盘
+---
+title: {date} 日报
+date: {date}
+tags: [A股, 复盘, 日报]
+aliases: []
+generated_at: {generated_at}
+quality_score: {quality_score}
+---
+
+# {date} 每日复盘
+
+生成时间: {generated_at}
+> 数据来源: 腾讯/新浪/东财 API + Tavily 财经新闻
 
 ## 一、市场全景概览
 

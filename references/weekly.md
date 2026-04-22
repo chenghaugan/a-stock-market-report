@@ -1,7 +1,19 @@
-# {YYYY-MM-DD} 周度复盘报告
+---
+title: {date} 周报
+date: {date}
+week_start: {周一日期}
+week_end: {周五日期}
+tags: [A股, 复盘, 周报]
+aliases: []
+generated_at: {generated_at}
+quality_score: {quality_score}
+---
 
+# {date} 周度复盘报告
+
+生成时间: {generated_at}
 > 报告周期：{周一日期} 至 {周五日期}
-> 数据来源：腾讯/新浪/东方财富 API + Tavily 财经新闻
+> 数据来源：腾讯/新浪/东财 API + Tavily 财经新闻
 
 ---
 

@@ -1,7 +1,19 @@
-# {YYYY-MM-DD} 月度复盘报告
+---
+title: {date} 月报
+date: {date}
+month_start: {月初日期}
+month_end: {月末日期}
+tags: [A股, 复盘, 月报]
+aliases: []
+generated_at: {generated_at}
+quality_score: {quality_score}
+---
 
+# {date} 月度复盘报告
+
+生成时间: {generated_at}
 > 报告周期：{月初日期} 至 {月末日期}
-> 数据来源：腾讯/新浪/东方财富 API + Tavily 财经新闻
+> 数据来源：腾讯/新浪/东财 API + Tavily 财经新闻
 
 ---
 
