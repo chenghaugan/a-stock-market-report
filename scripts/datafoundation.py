@@ -469,9 +469,7 @@ class QualityScorer:
 
     支持对以下数据类型评分：
     - 指数数据 (index_data)
-    - 行业板块数据 (sectors_data)
     - 自选股/关注列表 (watchlist)
-    - 涨停池 (zt_pool)
 
     交叉验证 (cross_validate) 对比多源数据，计算一致性分数。
     """
@@ -480,12 +478,6 @@ class QualityScorer:
     INDEX_REQUIRED_FIELDS: Tuple[str, ...] = (
         "name", "code", "price", "prev_close", "change_pct"
     )
-
-    # 板块数据必须字段
-    SECTOR_REQUIRED_FIELDS: Tuple[str, ...] = ("name", "raw_change")
-
-    # 涨停池必须字段
-    ZT_POOL_REQUIRED_FIELDS: Tuple[str, ...] = ("name", "code", "zt_reason")
 
     # 单个标的价格合理范围（a股，±50%）
     PRICE_REASONABLE_RANGE: Tuple[float, float] = (0.1, 1000.0)
@@ -550,77 +542,6 @@ class QualityScorer:
             raw_data=data if isinstance(data, dict) else None,
         )
 
-    def score_sectors_data(
-        self,
-        data: List[Dict[str, Any]],
-        source: str,
-    ) -> SourceQuality:
-        """
-        对行业板块数据质量评分。
-
-        Args:
-            data: 板块数据列表
-            source: 数据源名称
-
-        Returns:
-            SourceQuality 评分结果
-        """
-        issues: List[str] = []
-        completeness = 1.0
-        reasonableness = 1.0
-
-        if not data:
-            issues.append("空数据")
-            return SourceQuality(
-                score=0.0,
-                completeness=0.0,
-                consistency=1.0,
-                reasonableness=0.0,
-                issues=issues,
-                raw_data={"items": [], "source": source},
-            )
-
-        # 字段完整性采样检查（前10条）
-        sample = data[:10]
-        for item in sample:
-            for field_name in self.SECTOR_REQUIRED_FIELDS:
-                if field_name not in item:
-                    issues.append(f"字段缺失: {field_name}")
-                    completeness -= 0.05
-                    break
-
-        completeness = max(0.0, completeness)
-
-        # 涨跌幅合理性检查
-        abnormal_count = 0
-        for item in data:
-            raw_change = item.get("raw_change", 0)
-            if raw_change is None:
-                continue
-            try:
-                val = float(raw_change)
-                if abs(val) > 20:  # 板块涨跌幅一般不超过 ±20%
-                    abnormal_count += 1
-            except (ValueError, TypeError):
-                pass
-
-        if abnormal_count > len(data) * 0.1:  # 超过10%异常
-            issues.append(f"{abnormal_count} 条数据涨跌幅超出合理范围")
-            reasonableness -= 0.2
-
-        reasonableness = max(0.0, reasonableness)
-
-        score = completeness * reasonableness
-
-        return SourceQuality(
-            score=score,
-            completeness=completeness,
-            consistency=1.0,
-            reasonableness=reasonableness,
-            issues=issues,
-            raw_data={"items": data[:50], "source": source, "total": len(data)},
-        )
-
     def score_watchlist(
         self,
         data: List[Dict[str, Any]],
@@ -669,65 +590,6 @@ class QualityScorer:
             reasonableness=reasonableness,
             issues=issues,
             raw_data={"items": data[:50], "source": source, "total": len(data)},
-        )
-
-    def score_zt_pool(
-        self,
-        data: List[Dict[str, Any]],
-        source: str,
-    ) -> SourceQuality:
-        """
-        对涨停池数据质量评分。
-
-        Args:
-            data: 涨停股票列表
-            source: 数据源名称
-
-        Returns:
-            SourceQuality 评分结果
-        """
-        issues: List[str] = []
-        completeness = 1.0
-        reasonableness = 1.0
-
-        if not data:
-            issues.append("空涨停池")
-            return SourceQuality(
-                score=0.0,
-                completeness=0.0,
-                consistency=1.0,
-                reasonableness=0.0,
-                issues=issues,
-                raw_data={"items": [], "source": source},
-            )
-
-        # 涨停股数量合理性（正常市场 50~200 家）
-        pool_size = len(data)
-        if pool_size < 10:
-            issues.append(f"涨停数量异常少: {pool_size}，可能数据不完整")
-            reasonableness -= 0.2
-        elif pool_size > 500:
-            issues.append(f"涨停数量异常多: {pool_size}，可能包含重复数据")
-            reasonableness -= 0.1
-
-        # 必要字段检查
-        for field_name in self.ZT_POOL_REQUIRED_FIELDS:
-            missing = sum(1 for item in data if not item.get(field_name))
-            if missing > 0:
-                issues.append(f"{missing} 条缺少字段: {field_name}")
-                completeness -= 0.05 * (missing / len(data))
-
-        completeness = max(0.0, completeness)
-        reasonableness = max(0.0, reasonableness)
-        score = completeness * reasonableness
-
-        return SourceQuality(
-            score=score,
-            completeness=completeness,
-            consistency=1.0,
-            reasonableness=reasonableness,
-            issues=issues,
-            raw_data={"items": data[:50], "source": source, "total": pool_size},
         )
 
     def cross_validate(
