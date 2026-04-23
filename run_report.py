@@ -139,98 +139,62 @@ def is_trading_day(check_date: str = None) -> bool:
 
 
 # ========== 数据质量校验 ==========
-def validate_data(sectors: list = None, zt_pool: list = None, indices: list = None, 
+def validate_data(indices: list = None,
+                  watchlist_a: list = None, watchlist_hk: list = None,
                   quality_info: dict = None) -> dict:
     """
     数据质量校验，返回结构化的 quality_report。
-    
-    评分规则:
-    - score >= 0.7 → passed=True, 无需补充
-    - 0.5 <= score < 0.7 → passed=True, 警告
-    - score < 0.5 → passed=False, 触发 Tavily 补充
+
+    只校验指数和自选股，移除板块/涨停池校验。
     """
-    if sectors is None: sectors = []
-    if zt_pool is None: zt_pool = []
     if indices is None: indices = []
-    
+    if watchlist_a is None: watchlist_a = []
+    if watchlist_hk is None: watchlist_hk = []
+
     issues = []
     warnings = []
     source_scores = {}
-    tavily_queries = []
-    tavily_fields = []
-    
-    # === 数据完整性检查 ===
-    if not sectors:
-        issues.append("板块数据为空")
-        tavily_queries.append(f"A股行业板块涨幅排名 今日")
-        tavily_fields.append("sectors")
-        source_scores['sectors'] = 0.0
-    elif len(sectors) < 10:
-        warnings.append(f"板块数据偏少（仅 {len(sectors)} 个）")
-        source_scores['sectors'] = len(sectors) / 50
-    else:
-        source_scores['sectors'] = 1.0
-    
-    if not zt_pool:
-        warnings.append("涨停池数据为空")
-        tavily_queries.append("今日涨停板 涨停原因")
-        tavily_fields.append("zt_pool")
-        source_scores['zt_pool'] = 0.0
-    elif len(zt_pool) < 5:
-        warnings.append(f"涨停池数据偏少（仅 {len(zt_pool)} 只）")
-        source_scores['zt_pool'] = len(zt_pool) / 50
-    else:
-        source_scores['zt_pool'] = 1.0
-    
+
+    # === 指数检查 ===
     if not indices:
         issues.append("指数数据获取失败")
-        tavily_queries.append("上证指数 深证成指 创业板 涨跌幅")
-        tavily_fields.append("indices")
         source_scores['indices'] = 0.0
     else:
         source_scores['indices'] = 1.0
-    
-    # === 异常值检查 ===
-    for s in sectors:
-        raw_change = s.get("change", 0)
-        if isinstance(raw_change, (int, float)):
-            if abs(raw_change) > 100:
-                issues.append(f"板块 {s.get('name', '?')} 涨跌幅异常: {raw_change:.2f}%")
-            elif abs(raw_change) > 50:
-                warnings.append(f"板块 {s.get('name', '?')} 涨跌幅偏高: {raw_change:.2f}%")
-    
-    for z in zt_pool:
-        change = z.get("change", 0)
-        if isinstance(change, (int, float)) and abs(change) > 15:
-            warnings.append(f"涨停股 {z.get('name', '?')} 涨跌幅异常: {change}%")
-    
-    # === 指数一致性检查 ===
-    if len(indices) >= 3:
-        pcts = [i.get('change_pct', 0) for i in indices]
-        if pcts:
-            diff = max(pcts) - min(pcts)
-            if diff > 2.0:
-                warnings.append(f"三大指数涨跌幅差异过大: {diff:.2f}%")
-    
+
+    # === 自选股检查 ===
+    if not watchlist_a:
+        warnings.append("A股自选股数据为空")
+        source_scores['watchlist_a'] = 0.0
+    elif len(watchlist_a) < 5:
+        warnings.append(f"A股自选股数据偏少（仅 {len(watchlist_a)} 只）")
+        source_scores['watchlist_a'] = 0.7
+    else:
+        source_scores['watchlist_a'] = 1.0
+
+    if not watchlist_hk:
+        warnings.append("港股自选股数据为空")
+        source_scores['watchlist_hk'] = 0.0
+    elif len(watchlist_hk) < 3:
+        warnings.append(f"港股自选股数据偏少（仅 {len(watchlist_hk)} 只）")
+        source_scores['watchlist_hk'] = 0.7
+    else:
+        source_scores['watchlist_hk'] = 1.0
+
     # === 综合评分 ===
     if source_scores:
         overall = sum(source_scores.values()) / len(source_scores)
     else:
         overall = 0.0
-    
+
     passed = overall >= 0.5 and len(issues) == 0
-    
+
     return {
         'passed': passed,
         'quality_score': overall,
         'source_scores': source_scores,
         'issues': issues,
         'warnings': warnings,
-        'tavily_supplement': {
-            'needed': not passed or len(tavily_queries) > 0,
-            'queries': tavily_queries,
-            'fields': tavily_fields,
-        },
     }
 
 
