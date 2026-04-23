@@ -30,8 +30,6 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 try:
     from fetchlayer import (
         fetch_multi_index,
-        fetch_multi_sectors,
-        fetch_multi_zt_pool,
         fetch_multi_watchlist_a,
         fetch_multi_watchlist_hk,
     )
