@@ -295,13 +295,7 @@ def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
     # === 多源并发获取 + 交叉验证 ===
     indices, index_qualities = fetch_multi_index()
     print(f"  指数: {len(indices)} 个, 质量: {[round(i.get('quality_score',0),2) for i in indices]}", file=sys.stderr)
-    
-    sectors, sector_qualities = fetch_multi_sectors()
-    print(f"  板块: {len(sectors)} 个", file=sys.stderr)
-    
-    zt_pool, zt_qualities = fetch_multi_zt_pool()
-    print(f"  涨停: {len(zt_pool)} 只", file=sys.stderr)
-    
+
     a_codes = config.get('watchlist', {}).get('a_shares', [])
     a_stocks, a_qualities = fetch_multi_watchlist_a(a_codes)
     print(f"  A股自选: {len(a_stocks)} 只", file=sys.stderr)
@@ -311,22 +305,17 @@ def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
     print(f"  港股自选: {len(hk_stocks)} 只", file=sys.stderr)
     
     # === 数据质量校验 ===
-    quality_report = validate_data(sectors, zt_pool, indices)
-    
+    quality_report = validate_data(indices, a_stocks, hk_stocks)
+
     all_warnings = quality_report.get('issues', []) + quality_report.get('warnings', [])
     if all_warnings:
         print("\n⚠️ 数据质量警告:", file=sys.stderr)
         for w in all_warnings[:5]:
             print(f"  - {w}", file=sys.stderr)
-    
+
     if not quality_report.get('passed'):
         print(f"⚠️ 数据质量不通过 (score={quality_report.get('quality_score', 0):.2f})", file=sys.stderr)
-        print(f"  Tavily补充查询: {quality_report['tavily_supplement']['queries']}", file=sys.stderr)
-    
-    # === 热门排序 ===
-    hot_sectors = analyze_hot_sectors(sectors)
-    hot_stocks = analyze_hot_stocks(zt_pool)
-    
+
     # === 自选股分段（修正统计逻辑）===
     # 涨幅>3% 为显著上涨，跌幅>3% 为显著下跌
     # 上涨：pct > 0，下跌：pct < 0，平盘：pct == 0 或接近0
@@ -363,10 +352,6 @@ def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
         "akshare_ready": AKSHARE_READY,
         "quality_report": quality_report,
         "indices": indices,
-        "sectors": sectors,
-        "hot_sectors": hot_sectors,
-        "zt_pool": zt_pool,
-        "hot_stocks": hot_stocks,
         "watchlist_a": {
             "all": a_stocks,
             "count": len(a_stocks),
@@ -397,8 +382,6 @@ def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
         },
         "data_source_status": {
             "indices": "ok" if indices else "failed",
-            "sectors": "ok" if sectors else "failed",
-            "zt_pool": "ok" if zt_pool else "failed",
             "watchlist_a": "ok" if a_stocks else "failed",
             "watchlist_hk": "ok" if hk_stocks else "failed",
         },
