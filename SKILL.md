@@ -25,6 +25,7 @@ a-stock-market-report/
 ├── config.json           # 配置（自选股、Obsidian API）
 ├── run_report.py         # 数据采集脚本
 ├── push_to_obsidian.py   # Obsidian 推送脚本
+├── push_to_feishu.py     # 飞书推送脚本（新增）
 ├── validate_report.py    # 报告校验脚本
 ├── output/               # 统一输出目录（新增）
 │   ├── data/             # 市场数据 JSON
@@ -142,13 +143,44 @@ python validate_report.py <report.md> --type daily
 - 字数达标
 - 无禁止占位符
 
-### Step 6: 推送
+### Step 6: 推送 Obsidian
 
 ```bash
 python push_to_obsidian.py push --file "2026-04-22_日报.md" --content-file report.md
 ```
 
 推送后必须GET验证文件存在。
+
+### Step 7: 推送飞书（新增）
+
+报告推送完 Obsidian 后，自动推送摘要到飞书群：
+
+```bash
+python push_to_feishu.py push --file report.md --type daily
+```
+
+**飞书推送特性**：
+- 自动提取报告关键信息（指数、板块、自选股）
+- 构建飞书卡片消息，展示市场概览
+- 支持多个 Webhook 配置
+
+**配置多个 Webhook**：
+```json
+{
+  "feishu": {
+    "webhooks": [
+      "https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
+      "https://open.feishu.cn/open-apis/bot/v2/hook/yyy"
+    ],
+    "enabled": true
+  }
+}
+```
+
+**推送流程**：
+```
+Obsidian 推送成功 → 飞书推送摘要 → 飞书群收到消息
+```
 
 ## 模板元数据
 
