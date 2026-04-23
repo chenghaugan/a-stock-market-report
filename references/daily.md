@@ -96,6 +96,12 @@ quality_score: {quality_score}
 
 ## 三、五大热门板块深度解析
 
+**数据来源**：由 Agent 通过 Tavily 实时搜索生成。
+
+**搜索策略**：
+- Query 1: "A股今日热门板块涨幅排名 TOP5"
+- Query 2-6: "今日{具体板块名}板块 龙头股 涨幅原因分析"（针对每个板块单独搜索）
+
 **板块筛选逻辑**：从投资经理视角综合考量，非单纯按涨跌幅排序。权重分配：
 - 板块热度（20%）：市场讨论度、新闻曝光度、社交媒体热度
 - 资金关注度（20%）：板块资金净流入、成交量放大程度
@@ -116,6 +122,12 @@ quality_score: {quality_score}
 - 涨跌幅仅为参考指标之一，不是唯一排序依据
 
 ## 四、五大核心个股追踪
+
+**数据来源**：由 Agent 通过 Tavily 实时搜索生成。
+
+**搜索策略**：
+- Query 1: "A股今日涨停股 涨停原因 概念板块"
+- Query 2-6: "今日{具体个股名} 所属板块 资金动向 分析"（针对每个个股单独搜索）
 
 **选股逻辑**：从全市场热点个股中筛选，热门板块权重60% + 个股权重40%，剔除新股（上市不足30天）。优先选择今日热门板块的龙头股、涨停股、资金关注度高的个股。
 
@@ -200,49 +212,23 @@ quality_score: {quality_score}
 3. **时间范围**：`time_range=day`
 4. **主题**：`topic=finance`
 
-### 数据采集失败兜底逻辑（重要）
+### 日报必搜 Query（更新）
 
-**⚠️ 当 JSON 数据中 `quality_report.passed=false` 或 `quality_score < 0.5` 时，必须执行 Tavily 兜底搜索**
-
-```
-# 检查 JSON 中的 quality_report 字段
-quality_report.passed == false  → 数据质量不通过，必须补充搜索
-quality_report.quality_score < 0.5 → 触发兜底机制
-
-# 兜底搜索 Query（从 tavily_supplement.queries 提取）
-{
-  "tavily_supplement": {
-    "needed": true,
-    "queries": ["A股行业板块涨幅排名 今日", "今日涨停板 涨停原因"],
-    "fields": ["sectors", "zt_pool"]
-  }
-}
-
-# 执行流程：
-1. 读取 JSON → 检查 quality_report.tavily_supplement.needed
-2. 如果 needed=true → 执行 tavily_supplement.quies 中的每个搜索
-3. 搜索结果用于补充缺失章节（按 tavily_supplement.fields 对应）
-```
-
-**字段-章节映射**：
-| tavily_supplement.fields | 对应章节 |
-|--------------------------|----------|
-| `indices` | 一、市场全景概览 |
-| `sectors` | 三、五大热门板块深度解析 |
-| `zt_pool` | 四、五大核心个股追踪 |
-| `watchlist_a/watchlist_hk` | 五、自选股跟踪 |
-
-### 日报必搜 Query
+**总搜索次数：14次（12次章节搜索 + 2次宏观搜索）**
 
 ```
-Query 1: "A股 今日行情 {date} 大盘 走势"
-Query 2: "A股 热点板块 资金流入 {date}"
-Query 3: "A股 政策面 利好利空 {date}"
-Query 4（可选）: "美股 港股 外盘行情 {date}"
-Query 5（可选）: "{具体热门板块} 今日行情 原因"
-```
+# 热门板块搜索（第三章，共6次）
+Query 1: "A股今日热门板块涨幅排名 TOP5"
+Query 2-6: "今日{具体板块名}板块 龙头股 涨幅原因分析"
 
-**⚠️ 如果 quality_report.tavily_supplement.queries 存在，优先执行这些兜底 Query，再执行常规必搜 Query**
+# 热门个股搜索（第四章，共6次）
+Query 7: "A股今日涨停股 涨停原因 概念板块"
+Query 8-12: "今日{具体个股名} 所属板块 资金动向 分析"
+
+# 宏观环境搜索（第二章，共2次）
+Query 13: "A股 今日行情 {date} 大盘 走势"
+Query 14: "A股 政策面 利好利空 {date}"
+```
 
 ---
 
