@@ -196,26 +196,6 @@ def validate_data(indices: list = None,
     }
 
 
-# ========== 热门排序 ==========
-def analyze_hot_sectors(sectors: List[Dict], top_n: int = 5) -> List[Dict]:
-    """热门板块排序（涨幅 TOP N）"""
-    sorted_sectors = sorted(
-        [s for s in sectors if s.get('change', 0) != 0],
-        key=lambda x: abs(x.get('change', 0)),
-        reverse=True
-    )
-    return sorted_sectors[:top_n]
-
-def analyze_hot_stocks(zt_pool: List[Dict], top_n: int = 5) -> List[Dict]:
-    """热门个股排序（涨停次数/连板 TOP N）"""
-    sorted_stocks = sorted(
-        zt_pool,
-        key=lambda x: x.get('zt_times', 0) or x.get('change', 0),
-        reverse=True
-    )
-    return sorted_stocks[:top_n]
-
-
 # ========== 主流程 ==========
 def main():
     """支持三种模式：daily / weekly / monthly"""
