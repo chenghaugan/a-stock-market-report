@@ -153,16 +153,21 @@ python push_to_obsidian.py push --file "2026-04-22_日报.md" --content-file rep
 
 ### Step 7: 推送飞书（新增）
 
-报告推送完 Obsidian 后，自动推送摘要到飞书群：
+报告推送完 Obsidian 后，自动推送完整报告到飞书群：
 
 ```bash
-python push_to_feishu.py push --file report.md --type daily
+python push_to_feishu.py push --file report.md --type daily --full
 ```
 
 **飞书推送特性**：
-- 自动提取报告关键信息（指数、板块、自选股）
-- 构建飞书卡片消息，展示市场概览
+- 使用飞书 interactive 卡片消息（支持 lark_md 格式）
+- 自动转换 Markdown 格式为飞书格式：
+  - **粗体**：保持原样（lark_md 支持）
+  - 涨跌颜色：正数 `<font color='green'>`，负数 `<font color='red'>`
+  - 表格：转换为列表格式（飞书 lark_md 不支持表格）
+  - 标题：二级标题转换为 **【标题】**
 - 支持多个 Webhook 配置
+- 报告过长自动分多个 div 元素展示
 
 **配置多个 Webhook**：
 ```json
@@ -177,9 +182,14 @@ python push_to_feishu.py push --file report.md --type daily
 }
 ```
 
+**推送模式**：
+- `--full`：推送完整报告（推荐）
+- 无参数：推送卡片摘要
+- `--simple`：推送简单文本摘要
+
 **推送流程**：
 ```
-Obsidian 推送成功 → 飞书推送摘要 → 飞书群收到消息
+Obsidian 推送成功 → 飞书推送完整报告 → 飞书群收到带格式消息
 ```
 
 ## 模板元数据
