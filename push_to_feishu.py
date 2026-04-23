@@ -270,12 +270,12 @@ def parse_markdown_tables(content: str) -> list:
                 row = {}
                 for i, cell in enumerate(cells):
                     col_name = column_names[i]
-                    # 处理涨跌幅颜色
+                    # 中国股市习惯：红涨绿跌
                     if headers[i] in ['涨跌幅', '涨跌', '周涨跌幅', '月涨跌幅', '涨幅', '跌幅', '涨跌幅%']:
                         if cell.startswith('-') or cell.startswith('↓'):
-                            row[col_name] = f"<font color='red'>{cell}</font>"
+                            row[col_name] = f"<font color='green'>{cell}</font>"  # 下跌用绿色
                         elif cell.startswith('+') or cell.startswith('↑') or cell == '涨停' or cell == '大涨':
-                            row[col_name] = f"<font color='green'>{cell}</font>"
+                            row[col_name] = f"<font color='red'>{cell}</font>"  # 上涨用红色
                         else:
                             row[col_name] = cell
                     else:
@@ -339,13 +339,13 @@ def convert_content_without_tables(content: str) -> str:
     result = re.sub(r'^\* (.+)$', r'• \1', result, flags=re.MULTILINE)
     result = re.sub(r'^(\d+)\. (.+)$', lambda m: f'• {m.group(2)}', result, flags=re.MULTILINE)
 
-    # 处理涨跌数值颜色
+    # 处理涨跌数值颜色 - 中国股市习惯：红涨绿跌
     def colorize_change(match):
         value = match.group(0)
         if value.startswith('-') or value.startswith('↓'):
-            return f"<font color='red'>{value}</font>"
+            return f"<font color='green'>{value}</font>"  # 下跌用绿色
         elif value.startswith('+') or value.startswith('↑'):
-            return f"<font color='green'>{value}</font>"
+            return f"<font color='red'>{value}</font>"  # 上涨用红色
         return value
 
     result = re.sub(r'[+-]\d+\.?\d*%', colorize_change, result)
@@ -404,14 +404,14 @@ def convert_markdown_to_feishu(content: str) -> str:
     # 转换数字列表：1. 文本 -> ① 文本
     result = re.sub(r'^(\d+)\. (.+)$', lambda m: f'• {m.group(2)}', result, flags=re.MULTILINE)
 
-    # 处理涨跌数值，添加颜色
+    # 处理涨跌数值，添加颜色 - 中国股市习惯：红涨绿跌
     # 匹配形如 +2.5% 或 -1.3% 的涨跌幅
     def colorize_change(match):
         value = match.group(0)
         if value.startswith('-') or value.startswith('↓'):
-            return f"<font color='red'>{value}</font>"
+            return f"<font color='green'>{value}</font>"  # 下跌用绿色
         elif value.startswith('+') or value.startswith('↑'):
-            return f"<font color='green'>{value}</font>"
+            return f"<font color='red'>{value}</font>"  # 上涨用红色
         return value
 
     # 在行内文本中查找涨跌幅数值并添加颜色
@@ -559,9 +559,9 @@ def build_full_report_message(content: str, metadata: dict) -> dict:
                         col_name = column_names[i]
                         if headers[i] in ['涨跌幅', '涨跌', '周涨跌幅', '月涨跌幅', '涨幅', '跌幅', '涨跌幅%']:
                             if cell.startswith('-') or cell.startswith('↓'):
-                                row[col_name] = f"<font color='red'>{cell}</font>"
+                                row[col_name] = f"<font color='green'>{cell}</font>"  # 下跌用绿色
                             elif cell.startswith('+') or cell.startswith('↑') or cell == '涨停' or cell == '大涨':
-                                row[col_name] = f"<font color='green'>{cell}</font>"
+                                row[col_name] = f"<font color='red'>{cell}</font>"  # 上涨用红色
                             else:
                                 row[col_name] = cell
                         else:
