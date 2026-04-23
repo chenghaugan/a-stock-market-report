@@ -391,19 +391,15 @@ def fetch_weekly_data(date_str: str, target_date: str, config: Dict) -> Dict:
         return {"error": "fetchlayer_not_ready", "date": date_str, "mode": "weekly"}
     
     print("\n正在采集周报数据...", file=sys.stderr)
-    
+
     # 使用多源获取
     indices, _ = fetch_multi_index()
-    sectors, _ = fetch_multi_sectors()
-    zt_pool, _ = fetch_multi_zt_pool()
-    
+
     a_codes = config.get('watchlist', {}).get('a_shares', [])
     a_stocks, _ = fetch_multi_watchlist_a(a_codes)
-    
-    quality_report = validate_data(sectors, zt_pool, indices)
-    hot_sectors = analyze_hot_sectors(sectors)
-    hot_stocks = analyze_hot_stocks(zt_pool)
-    
+
+    quality_report = validate_data(indices, a_stocks)
+
     output = {
         "date": date_str,
         "target_date": target_date,
@@ -411,10 +407,6 @@ def fetch_weekly_data(date_str: str, target_date: str, config: Dict) -> Dict:
         "generated_at": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "quality_report": quality_report,
         "indices": indices,
-        "sectors": sectors,
-        "hot_sectors": hot_sectors,
-        "zt_pool": zt_pool,
-        "hot_stocks": hot_stocks,
         "watchlist_a": {"all": a_stocks},
     }
     
@@ -443,19 +435,15 @@ def fetch_monthly_data(date_str: str, target_date: str, config: Dict) -> Dict:
         return {"error": "fetchlayer_not_ready", "date": date_str, "mode": "monthly"}
     
     print("\n正在采集月报数据...", file=sys.stderr)
-    
+
     # 使用多源获取
     indices, _ = fetch_multi_index()
-    sectors, _ = fetch_multi_sectors()
-    zt_pool, _ = fetch_multi_zt_pool()
-    
+
     a_codes = config.get('watchlist', {}).get('a_shares', [])
     a_stocks, _ = fetch_multi_watchlist_a(a_codes)
-    
-    quality_report = validate_data(sectors, zt_pool, indices)
-    hot_sectors = analyze_hot_sectors(sectors)
-    hot_stocks = analyze_hot_stocks(zt_pool)
-    
+
+    quality_report = validate_data(indices, a_stocks)
+
     output = {
         "date": date_str,
         "target_date": target_date,
@@ -463,10 +451,6 @@ def fetch_monthly_data(date_str: str, target_date: str, config: Dict) -> Dict:
         "generated_at": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "quality_report": quality_report,
         "indices": indices,
-        "sectors": sectors,
-        "hot_sectors": hot_sectors,
-        "zt_pool": zt_pool,
-        "hot_stocks": hot_stocks,
         "watchlist_a": {"all": a_stocks},
     }
     
