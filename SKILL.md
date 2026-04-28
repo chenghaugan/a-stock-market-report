@@ -101,10 +101,11 @@ output/news/daily/news_YYYYMMDD.json
 - 周报/月报复用日报新闻，节省 Tavily credits
 - 数据可追溯，便于回溯分析
 
-### Step 3: 报告生成
+## Step 3: 报告生成
 
-AI Agent 基于 `references/daily.md` 模板生成报告：
+**⚠️ 模板来源**：AI Agent **只从 `references/daily.md` 读取模板**，SKILL.md 不包含模板内容。
 
+执行步骤：
 1. 读取 `references/daily.md` 获取模板结构和要求
 2. 解析模板中的元数据区块（SECTIONS、FORBIDDEN等）
 3. 结合JSON数据 + Tavily搜索补充（日报：3-5次搜索）
