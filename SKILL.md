@@ -103,7 +103,13 @@ output/news/daily/news_YYYYMMDD.json
 
 ## Step 3: 报告生成
 
-**⚠️ 模板来源**：AI Agent **只从 `references/daily.md` 读取模板**，SKILL.md 不包含模板内容。
+**⚠️ 模板来源**：AI Agent 从对应的模板文件读取：
+
+| 报告类型 | 模板文件 | 说明 |
+|---------|---------|------|
+| 日报 | `references/daily.md` | 每日复盘报告模板 |
+| 周报 | `references/weekly.md` | 每周复盘报告模板 |
+| 月报 | `references/monthly.md` | 每月复盘报告模板 |
 
 执行步骤：
 1. 读取 `references/daily.md` 获取模板结构和要求
