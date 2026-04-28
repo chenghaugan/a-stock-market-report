@@ -404,7 +404,528 @@ def fetch_multi_index() -> Tuple[List[Dict], List[SourceQuality]]:
 
         final.append(best)
 
+    # === akshare兜底 ===
+    if len(final) < 4:  # 指数数量不足时触发兜底
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from akshare_fallback import fetch_index_fallback
+            ak_result = fetch_index_fallback()
+            if ak_result:
+                # 合并akshare结果（优先curl数据）
+                existing_names = {item.get("name") for item in final}
+                for item in ak_result:
+                    if item.get("name") not in existing_names:
+                        final.append(item)
+                print(f"[INFO] 指数使用akshare兜底: {len(ak_result)} 个", file=__import__('sys').stderr)
+        except Exception as e:
+            print(f"[WARN] akshare指数兜底失败: {e}", file=__import__('sys').stderr)
+
     return final, raw_results
+
+
+# =============================================================================
+# 行业板块 fetch_multi_sectors
+# =============================================================================
+
+def parse_sina_sector_v2(content: str) -> List[Dict]:
+    """
+    解析新浪 newFLJK.php?param=class (v2) 板块响应
+    返回原始 change 值（未归一化），由调用方 normalize_percent 处理
+    """
+    m = re.search(r'S_Finance_bankuai_class\s*=\s*(\{.*?\})\s*;?\s*$', content, re.DOTALL)
+    if not m:
+        return []
+    raw_json = m.group(1)
+    data = {}
+    it = iter(raw_json[1:-1])
+    buf, in_str, escape_next = [], False, False
+    for ch in it:
+        if escape_next:
+            buf.append(ch); escape_next = False; continue
+        if ch == '\\':
+            escape_next = True; continue
+        if ch == '"':
+            in_str = not in_str; buf.append(ch); continue
+        if ch == ',' and not in_str:
+            pair = ''.join(buf); buf = []
+            kv = pair.split(':', 1)
+            if len(kv) == 2:
+                k = kv[0].strip().strip('"')
+                v = kv[1].strip()
+                if v.startswith('"') and v.endswith('"'):
+                    v = v[1:-1]
+                elif v.startswith('"'):
+                    v = v[1:]
+                elif v.endswith('"'):
+                    v = v[:-1]
+                data[k] = v
+            continue
+        buf.append(ch)
+    if buf:
+        pair = ''.join(buf)
+        kv = pair.split(':', 1)
+        if len(kv) == 2:
+            k = kv[0].strip().strip('"')
+            v = kv[1].strip().strip('"')
+            data[k] = v
+
+    result = []
+    for key, vals in data.items():
+        parts = vals.split(',')
+        if len(parts) >= 6:
+            try:
+                # parts[4] = 涨跌幅，原始值（可能小数可能百分比）
+                raw_change = parts[4] if parts[4] else "0"
+                raw_change_val = float(raw_change)
+            except ValueError:
+                raw_change_val = 0.0
+            result.append({
+                "name":       parts[1],
+                "raw_change": raw_change_val,   # 原始值，归一化由调用方处理
+                "volume":     parts[6] if len(parts) > 6 else "",
+                "turnover":   parts[7] if len(parts) > 7 else "",
+                "leader":     parts[11] if len(parts) > 11 else "",
+                "_raw_format": "unknown",       # 待 cross_validate 后标记
+            })
+    return result
+
+
+def parse_sina_sector_v1(content: str) -> List[Dict]:
+    """解析新浪 newFLJK.php?param=class&type=2 (v1) 板块响应"""
+    return parse_sina_sector_v2(content)  # 格式相同
+
+
+def parse_em_sector(content: str) -> List[Dict]:
+    """
+    解析东方财富 push2delay clist 板块响应
+    f3 = 涨跌幅%（东财直接是百分比）
+    """
+    try:
+        obj = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    results = []
+    for item in obj.get("data", {}).get("diff", []):
+        name = item.get("f14", "")
+        if not name:
+            continue
+        results.append({
+            "name":       name,
+            "raw_change": safe_float(item.get("f3")),
+            "volume":     safe_int_str(item.get("f20")),
+            "turnover":   safe_int_str(item.get("f62")),
+            "leader":     "",
+            "_raw_format": "percent",  # 东财直接是百分比
+        })
+    return results
+
+
+def fetch_multi_sectors() -> Tuple[List[Dict], List[SourceQuality]]:
+    """
+    三源并发获取行业板块，交叉验证 + 归一化。
+    关键：统一用 normalize_percent 处理 ×100 问题
+    返回: (normalized_sectors, source_qualities)
+    """
+    sources = build_source_configs()
+    tasks = [
+        (
+            "新浪板块v2",
+            sources["新浪"],
+            "https://vip.stock.finance.sina.com.cn/q/view/newFLJK.php?param=class",
+            None
+        ),
+        (
+            "新浪板块v1",
+            sources["新浪"],
+            "https://vip.stock.finance.sina.com.cn/q/view/newFLJK.php?param=class&type=2",
+            None
+        ),
+        (
+            "东财板块",
+            sources["东财"],
+            "https://push2delay.eastmoney.com/api/qt/clist/get",
+            {
+                "pn": "1", "pz": "500", "po": "1", "np": "1",
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                "fltt": "2", "invt": "2", "fid": "f3",
+                "fs": "m:90+t:2+f:!50",
+                "fields": "f2,f3,f4,f12,f14,f20,f62",
+                "_": str(int(datetime.datetime.now().timestamp() * 1000)),
+            }
+        ),
+    ]
+
+    raw_results = fetch_multi_async(tasks, timeout_per_source=25)
+
+    # 解析
+    parsed_by_source = {}
+    for sq in raw_results:
+        if sq.score < 0.3:
+            continue
+        try:
+            src = sq.raw_data.get("source", "") if sq.raw_data else ""
+            resp = sq.raw_data.get("response", "") if sq.raw_data else ""
+            if "新浪板块v2" in src:
+                parsed_by_source["新浪板块v2"] = parse_sina_sector_v2(resp)
+            elif "新浪板块v1" in src:
+                parsed_by_source["新浪板块v1"] = parse_sina_sector_v1(resp)
+            elif "东财板块" in src:
+                parsed_by_source["东财板块"] = parse_em_sector(resp)
+            if sq.raw_data:
+                sq.raw_data["parsed"] = parsed_by_source.get(src, [])
+        except Exception as e:
+            sq.issues.append(f"解析失败: {e}")
+            sq.score = 0.1
+
+    # 按板块名合并多源数据
+    all_sector_names = set()
+    for items in parsed_by_source.values():
+        for item in items:
+            all_sector_names.add(item["name"])
+
+    final = []
+    for sector_name in all_sector_names:
+        # 收集该板块在各源中的原始值
+        raw_values = []
+        for src, items in parsed_by_source.items():
+            for item in items:
+                if item["name"] == sector_name:
+                    raw_values.append((item["raw_change"], src))
+                    break
+
+        if not raw_values:
+            continue
+
+        # 多源归一化：正确调用normalize_percent_multi_source
+        values = [v for v, src in raw_values]
+        source_names = [src for v, src in raw_values]
+        normalized_floats = normalize_percent_multi_source(values, source_names)
+
+        # 构建三元组格式 (val, src, warns)
+        normalized = []
+        for i, (val, src) in enumerate(raw_values):
+            warns = []
+            norm_val = normalized_floats[i]
+            if abs(norm_val) > 20:
+                warns.append(f"涨跌幅超出范围: {norm_val:.2f}%")
+            normalized.append((norm_val, src, warns))
+
+        # 取最可信的值（多源一致 or 单源高分）
+        valid_normalized = [(val, src, warns) for val, src, warns in normalized
+                            if abs(val) <= 20]
+
+        if len(valid_normalized) >= 2:
+            # 多源，取均值（降低单源偏差影响）
+            avg_val = sum(v for v, _, _ in valid_normalized) / len(valid_normalized)
+            best_src = max(valid_normalized, key=lambda x: x[0])[1]  # 取最大涨幅的源
+            issues = [w for _, _, warns in valid_normalized for w in warns]
+            score = 0.8 if len(valid_normalized) >= 3 else 0.7
+        elif len(valid_normalized) == 1:
+            avg_val, best_src, issues = valid_normalized[0][0], valid_normalized[0][1], valid_normalized[0][2]
+            score = 0.6
+        else:
+            # 所有值都超出合理范围
+            avg_val = normalized[0][0] if normalized else 0
+            best_src = normalized[0][1] if normalized else "unknown"
+            issues = ["归一化后超出涨跌范围"]
+            score = 0.3
+
+        # 取该板块的 volume/turnover/leader（优先东财，其次任意源）
+        volume = ""
+        turnover = ""
+        leader = ""
+        for src_priority in ["东财板块", "新浪板块v2", "新浪板块v1"]:
+            if src_priority in parsed_by_source:
+                for item in parsed_by_source[src_priority]:
+                    if item["name"] == sector_name:
+                        volume = item.get("volume", "")
+                        turnover = item.get("turnover", "")
+                        leader = item.get("leader", "")
+                        break
+                if volume or leader:
+                    break
+
+        final.append({
+            "name":      sector_name,
+            "change":    round(avg_val, 4),
+            "volume":    volume,
+            "turnover":  turnover,
+            "leader":    leader,
+            "_quality_source": best_src,
+            "_quality_score":  score,
+            "_quality_issues": issues,
+        })
+
+    # 按涨幅排序
+    final.sort(key=lambda x: x["change"], reverse=True)
+    for i, item in enumerate(final):
+        item["rank"] = i + 1
+
+    # === akshare兜底 ===
+    if len(final) < 10:  # 板块数据太少时触发兜底
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from akshare_fallback import fetch_sectors_fallback
+            ak_result = fetch_sectors_fallback()
+            if ak_result:
+                # 合并akshare结果
+                existing_names = {item.get("name") for item in final}
+                for item in ak_result:
+                    if item.get("name") not in existing_names:
+                        final.append(item)
+                # 重新排序
+                final.sort(key=lambda x: x["change"], reverse=True)
+                for i, item in enumerate(final):
+                    item["rank"] = i + 1
+                print(f"[INFO] 板块使用akshare兜底: {len(ak_result)} 个", file=__import__('sys').stderr)
+        except Exception as e:
+            print(f"[WARN] akshare板块兜底失败: {e}", file=__import__('sys').stderr)
+
+    return final, raw_results
+
+
+# =============================================================================
+# 涨停板 fetch_multi_zt_pool
+# =============================================================================
+
+def parse_em_zt(content: str) -> List[Dict]:
+    """
+    解析东方财富 push2 涨停板响应
+    f3 = 涨跌幅%（直接百分比）, f12=代码, f14=名称, f20=成交量, f62=成交额
+    """
+    try:
+        obj = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    stocks = []
+    for item in obj.get("data", {}).get("diff", []):
+        change = safe_float(item.get("f3"))
+        if change < 9.9:
+            continue
+        stocks.append({
+            "name":   item.get("f14", ""),
+            "code":   item.get("f12", ""),
+            "change": change,
+            "volume": safe_int_str(item.get("f20")) if item.get("f20") not in (None, "") else "",
+            "amount": safe_int_str(item.get("f62")) if item.get("f62") not in (None, "") else "",
+        })
+    return stocks
+
+
+def parse_tencent_zt_prices(codes: List[str], raw_stocks: List[Dict]) -> List[Dict]:
+    """
+    腾讯 API 批量获取涨停股准确涨幅（备援层）
+    已知问题：新浪 ZT API 涨幅数据失真，需要腾讯兜底
+    """
+    if not raw_stocks:
+        return raw_stocks
+
+    # 构建腾讯代码格式
+    results = []
+    for i in range(0, len(codes), 50):
+        batch = codes[i:i+50]
+        codes_str = ",".join([
+            code if code.startswith(("sh", "sz", "bj")) else
+            ("sz" + code) if code.startswith(("0", "3")) else
+            ("sh" + code)
+            for code in batch
+        ])
+        try:
+            url = f"http://qt.gtimg.cn/q={codes_str}"
+            result = fetch_with_retry(
+                url,
+                DataSourceConfig(name="腾讯", priority=1, base_timeout=15, max_retries=3)
+            )
+            if not result.success:
+                # 失败时保留原始股票信息
+                for code in batch:
+                    for s in raw_stocks:
+                        if s["code"] == code:
+                            results.append(s)
+                continue
+
+            pct_map = {}
+            for line in result.content.strip().split("\n"):
+                if not line.strip() or '~' not in line:
+                    continue
+                parts = line.split("~")
+                if len(parts) < 33:
+                    continue
+                code_raw = parts[2]
+                try:
+                    price = safe_float(parts[3])
+                    prev  = safe_float(parts[4])
+                    pct   = (price - prev) / prev * 100 if prev else 0
+                    pct_map[code_raw] = round(pct, 2)
+                except (ValueError, ZeroDivisionError):
+                    pass
+
+            # 更新涨幅
+            for stock in raw_stocks:
+                code_key = stock["code"].replace("sh", "").replace("sz", "").replace("bj", "")
+                real_pct = pct_map.get(code_key)
+                if real_pct is not None:
+                    stock = dict(stock)
+                    stock["change"] = real_pct
+                results.append(stock)
+        except Exception:
+            # 异常时保留原始股票信息
+            for code in batch:
+                for s in raw_stocks:
+                    if s["code"] == code:
+                        results.append(s)
+
+    return results
+
+
+def fetch_multi_zt_pool() -> Tuple[List[Dict], List[SourceQuality]]:
+    """
+    涨停板获取（重构版）：
+    - 主源：新浪行业涨停统计 + 腾讯涨幅补充
+    - 备援：东财 push2（可能不稳定）
+
+    新浪返回的是行业涨停统计，每个行业有涨停数量和代表股，
+    需要通过腾讯API获取个股涨幅。
+    """
+    sources = build_source_configs()
+    final = []
+    best_quality = None
+
+    # === 主策略：新浪行业涨停统计 + 腾讯涨幅 ===
+    try:
+        sina_url = "https://vip.stock.finance.sina.com.cn/q/view/newFLJK.php?param=zt"
+        result = fetch_with_retry(
+            sina_url,
+            sources["新浪"]
+        )
+        if result.success and "S_Finance_bankuai_zt" in result.content:
+            # 新浪返回GBK编码，已在curl_keeper中解码
+            content = result.content
+
+            m = re.search(
+                r'var\s+S_Finance_bankuai_zt\s*=\s*(\{.*?\})\s*;?\s*$',
+                content, re.DOTALL
+            )
+            if m:
+                obj = json.loads(m.group(1))
+                raw_stocks = []
+
+                # 从行业涨停统计中提取代表股
+                for v in obj.values():
+                    parts = v.split(",")
+                    if len(parts) < 13:
+                        continue
+
+                    # parts[8]=股票代码, parts[12]=股票名称
+                    code = parts[8].strip()
+                    name = parts[12].strip()
+                    zt_count = parts[2]  # 该行业涨停股数量
+
+                    if code and code not in ("0", "--", "") and zt_count != "0":
+                        raw_stocks.append({
+                            "name": name,
+                            "code": code,
+                            "change": 0.0,  # 涨幅待腾讯补充
+                            "volume": parts[6].strip() if len(parts) > 6 else "",
+                            "amount": parts[7].strip() if len(parts) > 7 else "",
+                            "industry": parts[1] if len(parts) > 1 else "",
+                        })
+
+                if raw_stocks:
+                    # 去重（同一股票可能是多个行业的代表）
+                    unique_stocks = {}
+                    for s in raw_stocks:
+                        key = s["code"]
+                        if key not in unique_stocks:
+                            unique_stocks[key] = s
+
+                    dedup_stocks = list(unique_stocks.values())
+                    codes = [s["code"] for s in dedup_stocks]
+
+                    # 通过腾讯API获取准确涨幅
+                    final = parse_tencent_zt_prices(codes, dedup_stocks)
+
+                    # 过滤涨幅>=9.9%且<=20%的股票（排除新股异常）
+                    final = [s for s in final if 9.9 <= s.get("change", 0) <= 20]
+
+                    if final:
+                        best_quality = SourceQuality(
+                            score=0.7,
+                            completeness=1.0,
+                            consistency=0.8,
+                            reasonableness=1.0,
+                            issues=["使用新浪统计+腾讯涨幅"],
+                            raw_data={"source": "新浪+腾讯", "parsed": final, "total": len(final)}
+                        )
+    except Exception as e:
+        print(f"[WARN] 新浪涨停统计解析失败: {e}", file=__import__('sys').stderr)
+
+    # === 备援：东财涨停API ===
+    if not final:
+        try:
+            em_url = "https://push2.eastmoney.com/api/qt/clist/get"
+            em_params = {
+                "pn": "1", "pz": "500", "po": "1", "np": "1",
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                "fltt": "2", "invt": "2", "fid": "f3",
+                "fs": "b:MK0204",  # 涨停板板块
+                "fields": "f2,f3,f4,f12,f14,f20,f62",
+            }
+
+            # 构建完整URL
+            param_str = "&".join([f"{k}={v}" for k, v in em_params.items()])
+            full_url = f"{em_url}?{param_str}"
+
+            result = curl_keeper(full_url, timeout=25, source_name="东财涨停")
+
+            if result.success and result.content:
+                stocks = parse_em_zt(result.content)
+                if stocks:
+                    final = stocks
+                    best_quality = SourceQuality(
+                        score=0.8,
+                        completeness=1.0,
+                        consistency=1.0,
+                        reasonableness=1.0,
+                        issues=["东财涨停数据"],
+                        raw_data={"source": "东财", "parsed": final, "total": len(final)}
+                    )
+        except Exception as e:
+            print(f"[WARN] 东财涨停API失败: {e}", file=__import__('sys').stderr)
+
+    # === akshare兜底 ===
+    if not final:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from akshare_fallback import fetch_zt_pool_fallback
+            ak_result = fetch_zt_pool_fallback()
+            if ak_result:
+                final = ak_result
+                best_quality = SourceQuality(
+                    score=0.7,
+                    completeness=1.0,
+                    consistency=0.8,
+                    reasonableness=1.0,
+                    issues=["akshare兜底"],
+                    raw_data={"source": "akshare_fallback", "parsed": final, "total": len(final)}
+                )
+                print(f"[INFO] 涨停池使用akshare兜底: {len(final)} 只", file=__import__('sys').stderr)
+        except Exception as e:
+            print(f"[WARN] akshare涨停兜底失败: {e}", file=__import__('sys').stderr)
+
+    # === 最终兜底 ===
+    if not final:
+        final = []
+        best_quality = SourceQuality(
+            score=0.0,
+            completeness=0.0,
+            consistency=0.0,
+            reasonableness=0.0,
+            issues=["所有涨停数据源均失败"],
+            raw_data={"source": "none", "parsed": []}
+        )
+
+    return final, [best_quality]
 
 
 # =============================================================================
@@ -643,6 +1164,19 @@ def fetch_multi_watchlist_a(codes: List[str]) -> Tuple[List[Dict], List[SourceQu
             best_item["_quality_issues"] = issues
             best_item["_sources"] = sources_found
             final.append(best_item)
+
+    # === akshare兜底 ===
+    missing_codes = set(codes) - {item.get("code", "").replace("sh", "").replace("sz", "").replace("bj", "") for item in final}
+    if missing_codes:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from akshare_fallback import fetch_a_stock_fallback
+            ak_result = fetch_a_stock_fallback(list(missing_codes))
+            if ak_result:
+                final.extend(ak_result)
+                print(f"[INFO] A股自选使用akshare兜底: {len(ak_result)} 只", file=__import__('sys').stderr)
+        except Exception as e:
+            print(f"[WARN] akshareA股兜底失败: {e}", file=__import__('sys').stderr)
 
     return final, raw_results
 
@@ -911,6 +1445,21 @@ def fetch_multi_watchlist_hk(codes: List[str]) -> Tuple[List[Dict], List[SourceQ
             best_item["_quality_issues"] = issues
             final.append(best_item)
 
+    # === akshare兜底 ===
+    all_codes_clean = [c.replace("hk", "").zfill(5) for c in codes]
+    found_codes = {item.get("code", "").replace("hk", "").zfill(5) for item in final}
+    missing_codes = set(all_codes_clean) - found_codes
+    if missing_codes:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from akshare_fallback import fetch_hk_stock_fallback
+            ak_result = fetch_hk_stock_fallback([f"hk{c}" for c in missing_codes])
+            if ak_result:
+                final.extend(ak_result)
+                print(f"[INFO] 港股自选使用akshare兜底: {len(ak_result)} 只", file=__import__('sys').stderr)
+        except Exception as e:
+            print(f"[WARN] akshare港股兜底失败: {e}", file=__import__('sys').stderr)
+
     return final, raw_results
 
 
@@ -1017,6 +1566,47 @@ def fetch_kline(ktype: str = "weekly", count: int = 5) -> Tuple[List[Dict], List
 
 
 # =============================================================================
+# 热门板块/个股分析（基于高质量数据）
+# =============================================================================
+
+def analyze_hot_sectors(sectors: List[Dict], top_n: int = 5) -> List[Dict]:
+    """按涨幅排序取 Top N 热门板块（所有数据已归一化）"""
+    if not sectors:
+        return []
+    sorted_sectors = sorted(sectors, key=lambda x: x.get('change', 0), reverse=True)
+    result = []
+    for i, s in enumerate(sorted_sectors[:top_n], 1):
+        result.append({
+            'rank':   i,
+            'name':   s['name'],
+            'change': s.get('change', 0),
+            'volume': s.get('volume', ''),
+            'leader': s.get('leader', ''),
+            '_quality_source': s.get('_quality_source', ''),
+            '_quality_score':  s.get('_quality_score', 0),
+        })
+    return result
+
+
+def analyze_hot_stocks(zt_pool: List[Dict], top_n: int = 5) -> List[Dict]:
+    """按涨幅排序取 Top N 涨停股"""
+    if not zt_pool:
+        return []
+    sorted_stocks = sorted(zt_pool, key=lambda x: float(x.get('change', 0) or 0), reverse=True)
+    result = []
+    for i, s in enumerate(sorted_stocks[:top_n], 1):
+        result.append({
+            'rank':   i,
+            'name':   s.get('name', ''),
+            'code':   s.get('code', ''),
+            'change': float(s.get('change', 0) or 0),
+            'volume': s.get('volume', ''),
+            'amount': s.get('amount', ''),
+        })
+    return result
+
+
+# =============================================================================
 # 入口测试
 # =============================================================================
 
@@ -1025,9 +1615,10 @@ if __name__ == "__main__":
     print("注意：需要完整 run_report.py 环境才能运行实际测试")
     print("本模块提供以下函数：")
     funcs = [
-        "fetch_multi_index",
+        "fetch_multi_index", "fetch_multi_sectors", "fetch_multi_zt_pool",
         "fetch_multi_watchlist_a", "fetch_multi_watchlist_hk",
         "fetch_kline",
+        "analyze_hot_sectors", "analyze_hot_stocks",
     ]
     for f in funcs:
         print(f"  - {f}()")

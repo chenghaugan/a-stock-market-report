@@ -11,6 +11,7 @@ validate_data 逻辑抽取/重写为清晰的底层模块。
 - SourceQuality: 数据质量评估结果（dataclass）
 - CurlKeeper: 统一 curl 封装，指数退避重试，自动编码检测
 - QualityScorer: 多维度数据质量评分与交叉验证
+- TavilySupplementGenerator: 低质量数据补充搜索查询生成
 
 作者：重构版本
 """
@@ -468,7 +469,9 @@ class QualityScorer:
 
     支持对以下数据类型评分：
     - 指数数据 (index_data)
+    - 行业板块数据 (sectors_data)
     - 自选股/关注列表 (watchlist)
+    - 涨停池 (zt_pool)
 
     交叉验证 (cross_validate) 对比多源数据，计算一致性分数。
     """
@@ -477,6 +480,12 @@ class QualityScorer:
     INDEX_REQUIRED_FIELDS: Tuple[str, ...] = (
         "name", "code", "price", "prev_close", "change_pct"
     )
+
+    # 板块数据必须字段
+    SECTOR_REQUIRED_FIELDS: Tuple[str, ...] = ("name", "raw_change")
+
+    # 涨停池必须字段
+    ZT_POOL_REQUIRED_FIELDS: Tuple[str, ...] = ("name", "code", "zt_reason")
 
     # 单个标的价格合理范围（a股，±50%）
     PRICE_REASONABLE_RANGE: Tuple[float, float] = (0.1, 1000.0)
@@ -541,6 +550,77 @@ class QualityScorer:
             raw_data=data if isinstance(data, dict) else None,
         )
 
+    def score_sectors_data(
+        self,
+        data: List[Dict[str, Any]],
+        source: str,
+    ) -> SourceQuality:
+        """
+        对行业板块数据质量评分。
+
+        Args:
+            data: 板块数据列表
+            source: 数据源名称
+
+        Returns:
+            SourceQuality 评分结果
+        """
+        issues: List[str] = []
+        completeness = 1.0
+        reasonableness = 1.0
+
+        if not data:
+            issues.append("空数据")
+            return SourceQuality(
+                score=0.0,
+                completeness=0.0,
+                consistency=1.0,
+                reasonableness=0.0,
+                issues=issues,
+                raw_data={"items": [], "source": source},
+            )
+
+        # 字段完整性采样检查（前10条）
+        sample = data[:10]
+        for item in sample:
+            for field_name in self.SECTOR_REQUIRED_FIELDS:
+                if field_name not in item:
+                    issues.append(f"字段缺失: {field_name}")
+                    completeness -= 0.05
+                    break
+
+        completeness = max(0.0, completeness)
+
+        # 涨跌幅合理性检查
+        abnormal_count = 0
+        for item in data:
+            raw_change = item.get("raw_change", 0)
+            if raw_change is None:
+                continue
+            try:
+                val = float(raw_change)
+                if abs(val) > 20:  # 板块涨跌幅一般不超过 ±20%
+                    abnormal_count += 1
+            except (ValueError, TypeError):
+                pass
+
+        if abnormal_count > len(data) * 0.1:  # 超过10%异常
+            issues.append(f"{abnormal_count} 条数据涨跌幅超出合理范围")
+            reasonableness -= 0.2
+
+        reasonableness = max(0.0, reasonableness)
+
+        score = completeness * reasonableness
+
+        return SourceQuality(
+            score=score,
+            completeness=completeness,
+            consistency=1.0,
+            reasonableness=reasonableness,
+            issues=issues,
+            raw_data={"items": data[:50], "source": source, "total": len(data)},
+        )
+
     def score_watchlist(
         self,
         data: List[Dict[str, Any]],
@@ -589,6 +669,65 @@ class QualityScorer:
             reasonableness=reasonableness,
             issues=issues,
             raw_data={"items": data[:50], "source": source, "total": len(data)},
+        )
+
+    def score_zt_pool(
+        self,
+        data: List[Dict[str, Any]],
+        source: str,
+    ) -> SourceQuality:
+        """
+        对涨停池数据质量评分。
+
+        Args:
+            data: 涨停股票列表
+            source: 数据源名称
+
+        Returns:
+            SourceQuality 评分结果
+        """
+        issues: List[str] = []
+        completeness = 1.0
+        reasonableness = 1.0
+
+        if not data:
+            issues.append("空涨停池")
+            return SourceQuality(
+                score=0.0,
+                completeness=0.0,
+                consistency=1.0,
+                reasonableness=0.0,
+                issues=issues,
+                raw_data={"items": [], "source": source},
+            )
+
+        # 涨停股数量合理性（正常市场 50~200 家）
+        pool_size = len(data)
+        if pool_size < 10:
+            issues.append(f"涨停数量异常少: {pool_size}，可能数据不完整")
+            reasonableness -= 0.2
+        elif pool_size > 500:
+            issues.append(f"涨停数量异常多: {pool_size}，可能包含重复数据")
+            reasonableness -= 0.1
+
+        # 必要字段检查
+        for field_name in self.ZT_POOL_REQUIRED_FIELDS:
+            missing = sum(1 for item in data if not item.get(field_name))
+            if missing > 0:
+                issues.append(f"{missing} 条缺少字段: {field_name}")
+                completeness -= 0.05 * (missing / len(data))
+
+        completeness = max(0.0, completeness)
+        reasonableness = max(0.0, reasonableness)
+        score = completeness * reasonableness
+
+        return SourceQuality(
+            score=score,
+            completeness=completeness,
+            consistency=1.0,
+            reasonableness=reasonableness,
+            issues=issues,
+            raw_data={"items": data[:50], "source": source, "total": pool_size},
         )
 
     def cross_validate(
@@ -781,7 +920,124 @@ class QualityScorer:
 
 
 # =============================================================================
-# 5. 辅助工具函数
+# 5. TavilySupplementGenerator 补充搜索查询生成
+# =============================================================================
+
+class TavilySupplementGenerator:
+    """
+    当数据质量不达标时，生成 Tavily 补充搜索查询。
+
+    根据数据类型和质量评分生成针对性的搜索查询，
+    用于从网络补充缺失或不可信的数据。
+
+    Example:
+        generator = TavilySupplementGenerator()
+        if generator.needs_supplement(quality, threshold=0.5):
+            queries = generator.generate_queries("index", "2026-04-21", quality)
+    """
+
+    # 各数据类型对应的搜索关键词模板
+    QUERY_TEMPLATES: Dict[str, List[str]] = {
+        "index": [
+            "{date} 上证指数 收盘价 涨跌幅",
+            "{date} 深证成指 创业板 收盘",
+            "{date} 沪深300 收盘点位",
+        ],
+        "sectors": [
+            "{date} 行业板块 涨幅榜 跌幅榜",
+            "{date} 热点板块 龙头股",
+            "{date} 板块轮动 资金流向",
+        ],
+        "watchlist": [
+            "{date} 自选股 行情 最新",
+            "{date} 关注股票 涨跌",
+        ],
+        "zt_pool": [
+            "{date} 涨停板 涨停原因 概念",
+            "{date} 今日涨停股 数量",
+            "{date} 涨停复盘 强势股",
+        ],
+    }
+
+    def __init__(self) -> None:
+        """初始化 TavilySupplementGenerator。"""
+        pass
+
+    def needs_supplement(self, quality: SourceQuality, threshold: float = 0.5) -> bool:
+        """
+        判断数据质量是否需要补充。
+
+        Args:
+            quality: 数据质量评估结果
+            threshold: 质量阈值，低于此值需要补充
+
+        Returns:
+            True if supplement is needed
+        """
+        if quality.score < threshold:
+            return True
+
+        # completeness 过低也需要补充
+        if quality.completeness < 0.6:
+            return True
+
+        # 有严重问题时也需要补充
+        critical_issues = [
+            "空数据", "空响应", "字段缺失",
+            "解析失败", "所有数据源均失败",
+        ]
+        for issue in quality.issues:
+            if any(c in issue for c in critical_issues):
+                return True
+
+        return False
+
+    def generate_queries(
+        self,
+        data_type: str,
+        date: str,
+        quality: SourceQuality,
+    ) -> List[str]:
+        """
+        根据数据类型和质量评分生成补充搜索查询。
+
+        Args:
+            data_type: 数据类型 ("index" / "sectors" / "watchlist" / "zt_pool")
+            date: 日期字符串，格式如 "2026-04-21"
+            quality: 数据质量评估结果
+
+        Returns:
+            搜索查询字符串列表
+        """
+        templates = self.QUERY_TEMPLATES.get(data_type, self.QUERY_TEMPLATES["index"])
+        queries = []
+
+        for template in templates:
+            query = template.format(date=date)
+            queries.append(query)
+
+        # 根据质量问题添加针对性查询
+        if quality.completeness < 0.8:
+            queries.append(f"{date} {data_type} 数据 完整")
+
+        if quality.reasonableness < 0.8:
+            queries.append(f"{date} {data_type} 价格 合理性")
+
+        if quality.issues:
+            # 从 issues 中提取关键词
+            for issue in quality.issues[:2]:
+                # 提取中文关键词
+                keywords = re.findall(r"[\u4e00-\u9fff]+", issue)
+                for kw in keywords:
+                    if len(kw) >= 2:
+                        queries.append(f"{date} {kw}")
+                        break
+
+        return queries[:6]  # 最多返回6条查询
+
+
+# =============================================================================
+# 6. 辅助工具函数
 # =============================================================================
 
 def normalize_percent(value: Any, source_name: str) -> float:
@@ -903,26 +1159,26 @@ def decode_response(raw_bytes: bytes, preferred_encoding: str = "utf-8") -> str:
 
 
 # =============================================================================
-# 6. 便捷封装函数（供 fetchlayer.py 使用）
+# 7. 便捷封装函数（供 fetchlayer.py 使用）
 # =============================================================================
 
 def curl_keeper(url: str, timeout: float = 15.0, source_name: str = "未知") -> FetchResult:
     """
     curl 单次请求封装（简化版，不重试）。
-
+    
     Args:
         url: 请求URL
         timeout: 超时秒数
         source_name: 数据源名称
-
+        
     Returns:
         FetchResult: 请求结果
     """
     import subprocess
     import time
-
+    
     start_time = time.time()
-
+    
     try:
         cmd = [
             "curl", "-s", "-S", "--noproxy", "*",
@@ -932,15 +1188,15 @@ def curl_keeper(url: str, timeout: float = 15.0, source_name: str = "未知") ->
             "--compressed",
             url
         ]
-
+        
         result = subprocess.run(
             cmd,
             capture_output=True,
             timeout=timeout + 2,
         )
-
+        
         elapsed = time.time() - start_time
-
+        
         if result.returncode == 0:
             content = decode_response(result.stdout)
             return FetchResult(
@@ -962,7 +1218,7 @@ def curl_keeper(url: str, timeout: float = 15.0, source_name: str = "未知") ->
                 error=error_msg,
                 source=source_name,
             )
-
+            
     except subprocess.TimeoutExpired:
         elapsed = time.time() - start_time
         return FetchResult(
@@ -990,11 +1246,11 @@ def curl_keeper(url: str, timeout: float = 15.0, source_name: str = "未知") ->
 def fetch_with_retry(url: str, config: DataSourceConfig) -> FetchResult:
     """
     带指数退避重试的请求。
-
+    
     Args:
         url: 请求URL
         config: 数据源配置
-
+        
     Returns:
         FetchResult: 最终请求结果
     """
@@ -1003,46 +1259,46 @@ def fetch_with_retry(url: str, config: DataSourceConfig) -> FetchResult:
         result = curl_keeper(url, timeout, config.name)
         if result.success:
             return result
-
+        
         # 不可恢复错误直接返回
         if result.error and any(
             code in result.error for code in ["404", "403", "401", "400"]
         ):
             return result
-
+        
         # 指数退避
         if attempt < config.max_retries - 1:
             wait_time = timeout * (2 ** attempt)  # 15s → 30s → 60s
             print(f"[RETRY] {config.name} 第{attempt+1}次失败，等待{wait_time}s后重试", file=__import__('sys').stderr)
             __import__('time').sleep(wait_time)
             timeout = min(timeout * 2, 60)  # 上限60秒
-
+    
     return result
 
 
 def fetch_multi_async(urls: List[str], configs: List[DataSourceConfig], max_workers: int = 5) -> List[FetchResult]:
     """
     多源并发请求。
-
+    
     Args:
         urls: URL列表
         configs: 对应的数据源配置列表
         max_workers: 最大并发数
-
+        
     Returns:
         List[FetchResult]: 各源请求结果
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time
-
+    
     results = []
-
+    
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(fetch_with_retry, url, cfg): (url, cfg)
             for url, cfg in zip(urls, configs)
         }
-
+        
         for future in as_completed(futures):
             url, cfg = futures[future]
             try:
@@ -1058,7 +1314,7 @@ def fetch_multi_async(urls: List[str], configs: List[DataSourceConfig], max_work
                     error=str(e),
                     source=cfg.name,
                 ))
-
+    
     return results
 
 
@@ -1086,7 +1342,7 @@ def normalize_percent_multi_source(values: List[Any], source_names: List[str]) -
 def build_source_configs() -> Dict[str, DataSourceConfig]:
     """
     构建标准数据源配置（扁平字典）。
-
+    
     Returns:
         Dict: 按名称 -> 配置 组织，方便 fetchlayer.py 使用
     """
@@ -1140,8 +1396,15 @@ if __name__ == "__main__":
     sq_index = scorer.score_index_data(test_index, "腾讯")
     print(f"   指数评分: score={sq_index.score:.2f}, issues={sq_index.issues}\n")
 
-    # 5. normalize_percent
-    print("5. normalize_percent (×100 问题根治):")
+    # 5. TavilySupplementGenerator
+    print("5. TavilySupplementGenerator:")
+    generator = TavilySupplementGenerator()
+    print(f"   needs_supplement(0.8): {generator.needs_supplement(sq, 0.5)}")
+    queries = generator.generate_queries("index", "2026-04-21", sq_index)
+    print(f"   生成查询: {queries}\n")
+
+    # 6. normalize_percent
+    print("6. normalize_percent (×100 问题根治):")
     test_cases = [
         (0.4996, "腾讯"),
         (1.24, "新浪"),

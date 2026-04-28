@@ -110,20 +110,6 @@ AI Agent 基于 `references/daily.md` 模板生成报告：
 3. 结合JSON数据 + Tavily搜索补充（日报：3-5次搜索）
 4. **新闻数据自动保存到 output/news/daily/ 目录**
 5. 按模板结构逐章节生成完整Markdown报告
-6. **报告文件保存到正确目录**（见下方规则）
-
-**报告文件保存目录规则（重要）**：
-
-| 报告类型 | 保存目录 | 示例文件名 |
-|---------|---------|-----------|
-| 日报 | `output/reports/daily/` | `2026-04-24_日报.md` |
-| 周报 | `output/reports/weekly/` | `2026-W17_周报.md` |
-| 月报 | `output/reports/monthly/` | `2026-04_月报.md` |
-
-**⚠️ 注意**：
-- 报告文件**必须**保存到对应子目录，不能直接保存到 `output/` 根目录
-- Write tool 的 file_path 参数应遵循上述目录映射
-- 推送 Obsidian 时，`--content-file` 参数也应指向正确目录
 
 **模板的作用**：指导AI Agent生成报告的格式、章节结构、字数要求，**不是手动撰写**。
 

@@ -30,6 +30,8 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 try:
     from fetchlayer import (
         fetch_multi_index,
+        fetch_multi_sectors,
+        fetch_multi_zt_pool,
         fetch_multi_watchlist_a,
         fetch_multi_watchlist_hk,
     )
@@ -137,63 +139,141 @@ def is_trading_day(check_date: str = None) -> bool:
 
 
 # ========== 数据质量校验 ==========
-def validate_data(indices: list = None,
-                  watchlist_a: list = None, watchlist_hk: list = None,
+def validate_data(sectors: list = None, zt_pool: list = None, indices: list = None, 
                   quality_info: dict = None) -> dict:
     """
     数据质量校验，返回结构化的 quality_report。
-
-    只校验指数和自选股，移除板块/涨停池校验。
+    
+    评分规则:
+    - score >= 0.7 → passed=True, 无需补充
+    - 0.5 <= score < 0.7 → passed=True, 警告
+    - score < 0.5 → passed=False, 触发 Tavily 补充
     """
+    if sectors is None: sectors = []
+    if zt_pool is None: zt_pool = []
     if indices is None: indices = []
-    if watchlist_a is None: watchlist_a = []
-    if watchlist_hk is None: watchlist_hk = []
-
+    
     issues = []
     warnings = []
     source_scores = {}
-
-    # === 指数检查 ===
+    tavily_queries = []
+    tavily_fields = []
+    
+    # === 数据完整性检查 ===
+    if not sectors:
+        issues.append("板块数据为空")
+        tavily_queries.append(f"A股行业板块涨幅排名 今日")
+        tavily_fields.append("sectors")
+        source_scores['sectors'] = 0.0
+    elif len(sectors) < 10:
+        warnings.append(f"板块数据偏少（仅 {len(sectors)} 个）")
+        source_scores['sectors'] = len(sectors) / 50
+    else:
+        source_scores['sectors'] = 1.0
+    
+    if not zt_pool:
+        warnings.append("涨停池数据为空")
+        tavily_queries.append("今日涨停板 涨停原因")
+        tavily_fields.append("zt_pool")
+        source_scores['zt_pool'] = 0.0
+    elif len(zt_pool) < 5:
+        warnings.append(f"涨停池数据偏少（仅 {len(zt_pool)} 只）")
+        source_scores['zt_pool'] = len(zt_pool) / 50
+    else:
+        source_scores['zt_pool'] = 1.0
+    
     if not indices:
         issues.append("指数数据获取失败")
+        tavily_queries.append("上证指数 深证成指 创业板 涨跌幅")
+        tavily_fields.append("indices")
         source_scores['indices'] = 0.0
     else:
         source_scores['indices'] = 1.0
-
-    # === 自选股检查 ===
-    if not watchlist_a:
-        warnings.append("A股自选股数据为空")
-        source_scores['watchlist_a'] = 0.0
-    elif len(watchlist_a) < 5:
-        warnings.append(f"A股自选股数据偏少（仅 {len(watchlist_a)} 只）")
-        source_scores['watchlist_a'] = 0.7
-    else:
-        source_scores['watchlist_a'] = 1.0
-
-    if not watchlist_hk:
-        warnings.append("港股自选股数据为空")
-        source_scores['watchlist_hk'] = 0.0
-    elif len(watchlist_hk) < 3:
-        warnings.append(f"港股自选股数据偏少（仅 {len(watchlist_hk)} 只）")
-        source_scores['watchlist_hk'] = 0.7
-    else:
-        source_scores['watchlist_hk'] = 1.0
-
+    
+    # === 异常值检查 ===
+    for s in sectors:
+        raw_change = s.get("change", 0)
+        if isinstance(raw_change, (int, float)):
+            if abs(raw_change) > 100:
+                issues.append(f"板块 {s.get('name', '?')} 涨跌幅异常: {raw_change:.2f}%")
+            elif abs(raw_change) > 50:
+                warnings.append(f"板块 {s.get('name', '?')} 涨跌幅偏高: {raw_change:.2f}%")
+    
+    for z in zt_pool:
+        change = z.get("change", 0)
+        if isinstance(change, (int, float)) and abs(change) > 15:
+            warnings.append(f"涨停股 {z.get('name', '?')} 涨跌幅异常: {change}%")
+    
+    # === 指数一致性检查 ===
+    if len(indices) >= 3:
+        pcts = [i.get('change_pct', 0) for i in indices]
+        if pcts:
+            diff = max(pcts) - min(pcts)
+            if diff > 2.0:
+                warnings.append(f"三大指数涨跌幅差异过大: {diff:.2f}%")
+    
     # === 综合评分 ===
     if source_scores:
         overall = sum(source_scores.values()) / len(source_scores)
     else:
         overall = 0.0
-
+    
     passed = overall >= 0.5 and len(issues) == 0
-
+    
     return {
         'passed': passed,
         'quality_score': overall,
         'source_scores': source_scores,
         'issues': issues,
         'warnings': warnings,
+        'tavily_supplement': {
+            'needed': not passed or len(tavily_queries) > 0,
+            'queries': tavily_queries,
+            'fields': tavily_fields,
+        },
     }
+
+
+# ========== 热门排序 ==========
+def analyze_hot_sectors(sectors: List[Dict], top_n: int = None) -> List[Dict]:
+    """
+    热门板块排序（按涨幅排序）
+
+    Args:
+        sectors: 板块数据列表
+        top_n: 返回数量，None表示返回全部数据（修复截断问题）
+
+    Returns:
+        按涨幅排序的板块列表
+    """
+    sorted_sectors = sorted(
+        [s for s in sectors if s.get('change', 0) != 0],
+        key=lambda x: abs(x.get('change', 0)),
+        reverse=True
+    )
+    if top_n is None:
+        return sorted_sectors  # 返回全部数据
+    return sorted_sectors[:top_n]
+
+def analyze_hot_stocks(zt_pool: List[Dict], top_n: int = None) -> List[Dict]:
+    """
+    热门个股排序（涨停次数/连板排序）
+
+    Args:
+        zt_pool: 涨停池数据列表
+        top_n: 返回数量，None表示返回全部数据（修复截断问题）
+
+    Returns:
+        按涨停次数排序的个股列表
+    """
+    sorted_stocks = sorted(
+        zt_pool,
+        key=lambda x: x.get('zt_times', 0) or x.get('change', 0),
+        reverse=True
+    )
+    if top_n is None:
+        return sorted_stocks  # 返回全部数据
+    return sorted_stocks[:top_n]
 
 
 # ========== 主流程 ==========
@@ -273,7 +353,13 @@ def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
     # === 多源并发获取 + 交叉验证 ===
     indices, index_qualities = fetch_multi_index()
     print(f"  指数: {len(indices)} 个, 质量: {[round(i.get('quality_score',0),2) for i in indices]}", file=sys.stderr)
-
+    
+    sectors, sector_qualities = fetch_multi_sectors()
+    print(f"  板块: {len(sectors)} 个", file=sys.stderr)
+    
+    zt_pool, zt_qualities = fetch_multi_zt_pool()
+    print(f"  涨停: {len(zt_pool)} 只", file=sys.stderr)
+    
     a_codes = config.get('watchlist', {}).get('a_shares', [])
     a_stocks, a_qualities = fetch_multi_watchlist_a(a_codes)
     print(f"  A股自选: {len(a_stocks)} 只", file=sys.stderr)
@@ -283,17 +369,22 @@ def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
     print(f"  港股自选: {len(hk_stocks)} 只", file=sys.stderr)
     
     # === 数据质量校验 ===
-    quality_report = validate_data(indices, a_stocks, hk_stocks)
-
+    quality_report = validate_data(sectors, zt_pool, indices)
+    
     all_warnings = quality_report.get('issues', []) + quality_report.get('warnings', [])
     if all_warnings:
         print("\n⚠️ 数据质量警告:", file=sys.stderr)
         for w in all_warnings[:5]:
             print(f"  - {w}", file=sys.stderr)
-
+    
     if not quality_report.get('passed'):
         print(f"⚠️ 数据质量不通过 (score={quality_report.get('quality_score', 0):.2f})", file=sys.stderr)
-
+        print(f"  Tavily补充查询: {quality_report['tavily_supplement']['queries']}", file=sys.stderr)
+    
+    # === 热门排序 ===
+    hot_sectors = analyze_hot_sectors(sectors, top_n=None)  # 返回全部板块数据（修复截断）
+    hot_stocks = analyze_hot_stocks(zt_pool, top_n=None)    # 返回全部涨停数据（修复截断）
+    
     # === 自选股分段（修正统计逻辑）===
     # 涨幅>3% 为显著上涨，跌幅>3% 为显著下跌
     # 上涨：pct > 0，下跌：pct < 0，平盘：pct == 0 或接近0
@@ -330,6 +421,10 @@ def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
         "akshare_ready": AKSHARE_READY,
         "quality_report": quality_report,
         "indices": indices,
+        "sectors": sectors,
+        "hot_sectors": hot_sectors,
+        "zt_pool": zt_pool,
+        "hot_stocks": hot_stocks,
         "watchlist_a": {
             "all": a_stocks,
             "count": len(a_stocks),
@@ -360,6 +455,8 @@ def fetch_daily_data(date_str: str, target_date: str, is_today_trading: bool,
         },
         "data_source_status": {
             "indices": "ok" if indices else "failed",
+            "sectors": "ok" if sectors else "failed",
+            "zt_pool": "ok" if zt_pool else "failed",
             "watchlist_a": "ok" if a_stocks else "failed",
             "watchlist_hk": "ok" if hk_stocks else "failed",
         },
@@ -391,15 +488,19 @@ def fetch_weekly_data(date_str: str, target_date: str, config: Dict) -> Dict:
         return {"error": "fetchlayer_not_ready", "date": date_str, "mode": "weekly"}
     
     print("\n正在采集周报数据...", file=sys.stderr)
-
+    
     # 使用多源获取
     indices, _ = fetch_multi_index()
-
+    sectors, _ = fetch_multi_sectors()
+    zt_pool, _ = fetch_multi_zt_pool()
+    
     a_codes = config.get('watchlist', {}).get('a_shares', [])
     a_stocks, _ = fetch_multi_watchlist_a(a_codes)
-
-    quality_report = validate_data(indices, a_stocks)
-
+    
+    quality_report = validate_data(sectors, zt_pool, indices)
+    hot_sectors = analyze_hot_sectors(sectors, top_n=None)  # 返回全部板块数据（修复截断）
+    hot_stocks = analyze_hot_stocks(zt_pool, top_n=None)    # 返回全部涨停数据（修复截断）
+    
     output = {
         "date": date_str,
         "target_date": target_date,
@@ -407,6 +508,10 @@ def fetch_weekly_data(date_str: str, target_date: str, config: Dict) -> Dict:
         "generated_at": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "quality_report": quality_report,
         "indices": indices,
+        "sectors": sectors,
+        "hot_sectors": hot_sectors,
+        "zt_pool": zt_pool,
+        "hot_stocks": hot_stocks,
         "watchlist_a": {"all": a_stocks},
     }
     
@@ -435,15 +540,19 @@ def fetch_monthly_data(date_str: str, target_date: str, config: Dict) -> Dict:
         return {"error": "fetchlayer_not_ready", "date": date_str, "mode": "monthly"}
     
     print("\n正在采集月报数据...", file=sys.stderr)
-
+    
     # 使用多源获取
     indices, _ = fetch_multi_index()
-
+    sectors, _ = fetch_multi_sectors()
+    zt_pool, _ = fetch_multi_zt_pool()
+    
     a_codes = config.get('watchlist', {}).get('a_shares', [])
     a_stocks, _ = fetch_multi_watchlist_a(a_codes)
-
-    quality_report = validate_data(indices, a_stocks)
-
+    
+    quality_report = validate_data(sectors, zt_pool, indices)
+    hot_sectors = analyze_hot_sectors(sectors, top_n=None)  # 返回全部板块数据（修复截断）
+    hot_stocks = analyze_hot_stocks(zt_pool, top_n=None)    # 返回全部涨停数据（修复截断）
+    
     output = {
         "date": date_str,
         "target_date": target_date,
@@ -451,6 +560,10 @@ def fetch_monthly_data(date_str: str, target_date: str, config: Dict) -> Dict:
         "generated_at": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "quality_report": quality_report,
         "indices": indices,
+        "sectors": sectors,
+        "hot_sectors": hot_sectors,
+        "zt_pool": zt_pool,
+        "hot_stocks": hot_stocks,
         "watchlist_a": {"all": a_stocks},
     }
     
